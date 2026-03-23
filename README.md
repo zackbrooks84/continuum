@@ -338,7 +338,7 @@ continuum/
 └── cli.py          # Click CLI
 ```
 
-Merges and supersedes [threadline](https://github.com/zackbrooks84/threadline) (checkpoints) and [forge](https://github.com/zackbrooks84/forge) (task queue) into a single cohesive package.
+Designed for Claude Code and any AI agent workflow where work spans multiple sessions.
 
 ---
 

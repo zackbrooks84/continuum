@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Task Queue (Forge lineage)
+# Task Queue
 # ---------------------------------------------------------------------------
 
 class TaskStatus(str, Enum):
@@ -55,7 +55,7 @@ class TaskResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Checkpoint / Handoff (Threadline lineage)
+# Checkpoint / Handoff
 # ---------------------------------------------------------------------------
 
 class Decision(BaseModel):
@@ -85,7 +85,7 @@ class Checkpoint(BaseModel):
 
     git_ref: Optional[str] = None
     agent: Optional[str] = None
-    task_id: Optional[str] = None           # forge task that produced this checkpoint
+    task_id: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
 
 
