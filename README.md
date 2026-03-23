@@ -196,6 +196,13 @@ Or with uv (recommended):
 |------|-------------|
 | `pattern_suggestions(project)` | Surface recurring decision patterns with suggested tags and rules |
 
+### Fully Automatic Mode
+
+| Tool | Description |
+|------|-------------|
+| `auto_mode(enabled, project)` | Activate all automation layers at once: observe + sync + smart retrieval |
+| `smart_resume(project, query)` | 3-tier retrieval with automatic depth selection — replaces manual tiers |
+
 ---
 
 ## CLI
@@ -519,6 +526,48 @@ pattern_suggestions("myapp")
 
 Patterns are detected silently by the observer thread — zero configuration. They tell you where your project has structural hot spots and help you encode institutional knowledge as standing rules.
 
+### Fully automatic mode: one call, all layers
+
+The highest-leverage thing you can do. One call activates everything — auto-observe, auto-sync, and smart retrieval — so you never have to think about setup again.
+
+```python
+# Session start — activate all layers
+auto_mode(enabled=True, project="myapp")
+# → Layer 1: auto-observe ON — every tool call silently captured
+# → Layer 2: auto-sync ON — MEMORY/DECISIONS/TASKS.md update on every checkpoint
+# → Layer 3: smart retrieval ON — handoff() auto-injects relevant history
+# → Just work normally. Continuum handles the rest.
+
+# Coming back to a project after days away
+smart_resume("myapp")
+# 3 results → auto-expands to full detail
+# → {depth: "full", checkpoints: [{task, goal, findings, dead_ends, next_steps...}]}
+
+smart_resume("myapp", query="auth JWT")
+# 8 results → timeline around top hit + full detail for top 2
+# → {depth: "timeline+detail", top_checkpoints: [...], timeline: [...]}
+
+smart_resume("myapp", query="performance")
+# 12 results → compact summaries to protect context budget
+# → {depth: "search_only", matches: [...], tip: "Narrow your query or use memory_get(ids=[...])"}
+```
+
+The depth selection is automatic:
+| Results | Depth | What you get |
+|---------|-------|--------------|
+| 0 | latest_only | Most recent checkpoint |
+| 1–3 | full | Complete detail on all hits |
+| 4–10 | timeline+detail | Timeline slice + full detail for top 2 |
+| 10+ | search_only | Compact summaries, tips to drill down |
+
+Auto-sync now runs without any configuration — it defaults to `~/.continuum/projects/{project}/` even if you never called `sync_files()`. Set a custom path with `sync_files(project, output_dir="./docs")` to override.
+
+```bash
+# Enable globally for a project
+export CONTINUUM_AUTO_MODE=1
+export CONTINUUM_OBSERVE_PROJECT=myapp
+```
+
 ---
 
 ## Data
@@ -546,7 +595,7 @@ export CONTINUUM_DB=/path/to/custom.db
 - **One DB** — tasks + checkpoints in a single SQLite file. Simple to backup, inspect, migrate.
 - **Auto-checkpoint** — set `auto_checkpoint=True` when pushing a task and stdout becomes structured findings automatically on completion.
 - **<1k token handoffs** — the resume briefing is designed to be loaded cold. Typically 400-800 tokens. Not a log dump.
-- **Three-tier memory retrieval** — `memory_search` → `memory_timeline` → `memory_get`. Search first, expand only what you need. 95% token savings.
+- **Three-tier memory retrieval** — `memory_search` → `memory_timeline` → `memory_get`. Search first, expand only what you need. 95% token savings. Or use `smart_resume()` to run all tiers automatically with depth selection.
 - **Auto-inject on session start** — `remember()` gives you a sub-400 token briefing of all active projects. Never start cold again.
 - **Auto-observe** — one `auto_observe_toggle()` call and every tool call is passively captured. Background daemon compresses batches into checkpoints automatically. No manual `checkpoint()` required. Rule-based or Claude Haiku compression.
 - **Auto-sync structured files** — every checkpoint writes MEMORY.md, DECISIONS.md, TASKS.md to your project directory automatically. Git-friendly, diffs cleanly, human-readable.
@@ -556,6 +605,7 @@ export CONTINUUM_DB=/path/to/custom.db
 - **Private tag filters** — `memory_search(query, tags=["private"])` / `exclude_tags=["archived"]` to scope or hide checkpoints in search results.
 - **Cross-agent handoffs** — `cross_agent_handoff(project, target_agent="gpt")` exports context formatted for ChatGPT, Gemini, or any generic agent.
 - **Pattern learning** — observer thread silently analyzes decisions after each compression. After 5+ similar choices, surfaces a suggested tag and standing rule via `pattern_suggestions()`.
+- **Fully automatic mode** — `auto_mode(enabled=True, project="x")` activates all three layers at once. Auto-sync now defaults to `~/.continuum/projects/{project}/` with zero configuration.
 - **Dead end propagation** — things you explicitly mark as dead ends survive across sessions and show up in every future handoff. Agents don't repeat past mistakes.
 - **Resource-aware** — daemon checks available RAM before running each task. Skip if low, retry in 10s.
 - **Dependency chains** — `depends_on=<task_id>` for sequencing builds, tests, deploys.
@@ -574,7 +624,7 @@ continuum/
 ├── observer.py     # Auto-observe: passive capture + rule/Claude compression
 ├── handoff.py      # Compact briefing generator
 ├── sync_files.py   # Auto-sync: render MEMORY/DECISIONS/TASKS.md
-├── mcp_server.py   # FastMCP server — all 27 tools in one place
+├── mcp_server.py   # FastMCP server — all 29 tools in one place
 └── cli.py          # Click CLI
 ```
 

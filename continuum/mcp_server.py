@@ -49,6 +49,10 @@ Tools exposed:
   Pattern Learning (recurring decision intelligence):
     pattern_suggestions — surface repeated decision patterns with tag/rule suggestions
 
+  Fully Automatic Mode (all layers, one call):
+    auto_mode           — activate auto-observe + auto-sync + smart retrieval at once
+    smart_resume        — 3-tier retrieval with automatic depth selection (replaces manual tiers)
+
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
 
@@ -77,26 +81,36 @@ mcp = FastMCP("continuum", "0.1.0")
 _db = DB()
 
 # ---------------------------------------------------------------------------
-# Session-level auto-observe state
-# Seeded from env vars; toggled at runtime via auto_observe_toggle()
+# Session-level state
+# Seeded from env vars; toggled at runtime via auto_observe_toggle() / auto_mode()
 # ---------------------------------------------------------------------------
 _auto_observe: bool = bool(os.environ.get("CONTINUUM_AUTO_OBSERVE"))
 _observe_project: Optional[str] = os.environ.get("CONTINUUM_OBSERVE_PROJECT")
 _observe_method: str = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
+_auto_mode_active: bool = bool(os.environ.get("CONTINUUM_AUTO_MODE"))
 
 
 def _maybe_sync(project: str) -> None:
-    """If a sync output dir is configured for this project, regenerate markdown files."""
+    """Regenerate markdown files for a project.
+
+    Uses the configured output_dir if set; otherwise falls back to
+    ~/.continuum/projects/{project}/ so auto-sync always runs — no config step required.
+    """
     try:
-        config = _db.get_project_config(project)
-        if not config or not config.auto_sync or not config.output_dir:
-            return
         from .sync_files import sync_project_files
         cp = _db.latest_checkpoint(project)
         if not cp:
             return
+        config = _db.get_project_config(project)
+        if config and not config.auto_sync:
+            return  # explicitly disabled
+        if config and config.output_dir:
+            out_path = Path(config.output_dir)
+        else:
+            # Default: always sync to ~/.continuum/projects/{project}/
+            out_path = Path.home() / ".continuum" / "projects" / project
         history = _db.list_checkpoints(project=project, limit=25)
-        sync_project_files(cp, history, Path(config.output_dir))
+        sync_project_files(cp, history, out_path)
     except Exception:
         pass
 
@@ -768,6 +782,214 @@ def observe_status() -> dict:
             "Use auto_observe_toggle(enabled=True, project='myproject') to start."
             if not _auto_observe
             else f"Capturing tool calls for '{_observe_project}'. Daemon compresses every 20 observations."
+        ),
+    }
+
+
+# ===========================================================================
+# Auto-mode — activate all three automation layers in one call
+# ===========================================================================
+
+@mcp.tool()
+def auto_mode(
+    enabled: bool,
+    project: str,
+    method: str = "rule",
+    compress_every: int = 20,
+) -> dict:
+    """Activate (or deactivate) all three Continuum automation layers at once.
+
+    One call replaces three separate setup steps:
+      Layer 1 — Auto-observe: every tool call silently captured as an observation
+      Layer 2 — Auto-sync:    MEMORY.md / DECISIONS.md / TASKS.md written on every checkpoint
+      Layer 3 — Smart context: handoff() and remember() auto-inject relevant history
+
+    When enabled, just work normally — Continuum captures, compresses, and syncs
+    everything in the background without any manual calls.
+
+    Args:
+        enabled: Turn all layers on or off
+        project: Project to attribute observations and syncs to
+        method: Observation compression method — "rule" (fast) or "claude" (Haiku)
+        compress_every: Compress observations into a checkpoint after this many calls
+    """
+    global _auto_observe, _observe_project, _observe_method, _auto_mode_active
+
+    _auto_mode_active = enabled
+    _auto_observe     = enabled
+    _observe_method   = method
+    if enabled:
+        _observe_project = project
+
+    if enabled:
+        # Ensure project config has auto_sync on
+        from .models import ProjectConfig
+        config = _db.get_project_config(project)
+        if not config:
+            _db.save_project_config(ProjectConfig(project=project, auto_sync=True))
+        elif not config.auto_sync:
+            _db.save_project_config(ProjectConfig(
+                project=project,
+                output_dir=config.output_dir,
+                auto_sync=True,
+            ))
+
+    layers = {
+        "auto_observe": enabled,
+        "auto_sync": enabled,
+        "smart_retrieval": enabled,
+    }
+
+    return {
+        "auto_mode": enabled,
+        "project": project,
+        "layers": layers,
+        "observe_method": method,
+        "compress_every": compress_every,
+        "sync_path": str(Path.home() / ".continuum" / "projects" / project),
+        "message": (
+            f"All automation layers {'activated' if enabled else 'deactivated'} for '{project}'. "
+            + ("Just work normally — Continuum handles the rest." if enabled else "")
+        ),
+        "tip": (
+            "Call smart_resume('" + project + "') at the start of a new session to reload context."
+            if enabled else
+            "Use auto_mode(enabled=True, project=...) to re-activate."
+        ),
+    }
+
+
+# ===========================================================================
+# Smart resume — 3-tier retrieval with automatic depth selection
+# ===========================================================================
+
+@mcp.tool()
+def smart_resume(
+    project: str,
+    query: Optional[str] = None,
+    window: int = 5,
+) -> dict:
+    """Three-tier memory retrieval in one call — automatically picks the right depth.
+
+    Replaces the manual memory_search → memory_timeline → memory_get workflow.
+    Automatically selects how deep to go based on what it finds:
+
+      0 results    → "no memory" message, suggests starting fresh
+      1–3 results  → auto-expands to full checkpoint detail (tier 3)
+      4–10 results → timeline slice around the top hit + full detail for top 2
+      10+ results  → compact summaries only, with drill-down tips
+
+    The query defaults to the project name if not specified — useful for a
+    general "what was I doing?" resume at session start.
+
+    Args:
+        project: Project to retrieve context for
+        query: Search terms (default: project name)
+        window: Timeline window size for medium-density results
+    """
+    search_query = query or project
+
+    # Tier 1 — search
+    hits = _db.search_checkpoints(search_query, limit=15)
+    count = len(hits)
+
+    if count == 0:
+        # Nothing in memory — fall back to latest checkpoint if exists
+        cp = _db.latest_checkpoint(project)
+        if not cp:
+            return {
+                "project": project,
+                "depth": "none",
+                "message": f"No memory for '{project}'. Call checkpoint() to start tracking.",
+                "handoff_tip": f"Use checkpoint() to save your first state for '{project}'.",
+            }
+        # Return just the latest
+        return {
+            "project": project,
+            "depth": "latest_only",
+            "checkpoint": {
+                "id": cp.id[:8],
+                "task": cp.current_task,
+                "goal": cp.goal,
+                "status": cp.status,
+                "findings": cp.findings,
+                "next_steps": cp.next_steps,
+                "dead_ends": cp.dead_ends,
+                "timestamp": cp.timestamp.isoformat(),
+            },
+            "tip": "No FTS matches found. Showing latest checkpoint instead.",
+        }
+
+    if count <= 3:
+        # Tier 3 — full detail on all hits
+        ids = [h["id"] for h in hits]
+        cps = _db.get_checkpoints_by_ids(ids)
+        return {
+            "project": project,
+            "depth": "full",
+            "reason": f"{count} result(s) — expanded to full detail automatically",
+            "checkpoints": [
+                {
+                    "id": cp.id[:8],
+                    "task": cp.current_task,
+                    "goal": cp.goal,
+                    "status": cp.status,
+                    "context": cp.context,
+                    "findings": cp.findings,
+                    "dead_ends": cp.dead_ends,
+                    "next_steps": cp.next_steps,
+                    "open_questions": cp.open_questions,
+                    "decisions": [d.model_dump() for d in cp.decisions],
+                    "timestamp": cp.timestamp.isoformat(),
+                }
+                for cp in cps
+            ],
+        }
+
+    if count <= 10:
+        # Tier 2 — timeline around top hit + full detail for top 2
+        top_id = hits[0]["id"]
+        timeline = _db.checkpoint_timeline(top_id, window=window)
+        top_cps = _db.get_checkpoints_by_ids([h["id"] for h in hits[:2]])
+        return {
+            "project": project,
+            "depth": "timeline+detail",
+            "reason": f"{count} results — showing timeline + full detail for top 2",
+            "top_checkpoints": [
+                {
+                    "id": cp.id[:8],
+                    "task": cp.current_task,
+                    "goal": cp.goal,
+                    "status": cp.status,
+                    "findings": cp.findings,
+                    "dead_ends": cp.dead_ends,
+                    "next_steps": cp.next_steps,
+                    "timestamp": cp.timestamp.isoformat(),
+                }
+                for cp in top_cps
+            ],
+            "timeline": [
+                {
+                    "id": cp.id[:8],
+                    "task": cp.current_task,
+                    "status": cp.status,
+                    "timestamp": cp.timestamp.isoformat(),
+                    "is_pivot": cp.id == top_id,
+                }
+                for cp in timeline
+            ],
+            "tip": f"Use memory_get(ids=[...]) for full detail on any timeline entry.",
+        }
+
+    # Tier 1 only — too many results, return compact summaries
+    return {
+        "project": project,
+        "depth": "search_only",
+        "reason": f"{count} results — showing compact summaries to save context",
+        "matches": hits[:10],
+        "tip": (
+            "Narrow your query or use memory_get(ids=[...]) for specific entries. "
+            "Top match: " + hits[0]["task"]
         ),
     }
 
