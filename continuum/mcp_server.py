@@ -49,6 +49,11 @@ Tools exposed:
   Pattern Learning (recurring decision intelligence):
     pattern_suggestions — surface repeated decision patterns with tag/rule suggestions
 
+  Notifications (Telegram / Discord / Slack / webhook):
+    notify_configure    — store channel config per-project; all tasks auto-notify on complete
+    notify_when_complete — one-time task notification (fires and self-deletes)
+    notify_test         — verify channels are reachable with a test message
+
   Fully Automatic Mode (all layers, one call):
     auto_mode           — activate auto-observe + auto-sync + smart retrieval at once
     smart_resume        — 3-tier retrieval with automatic depth selection (replaces manual tiers)
@@ -60,6 +65,12 @@ Environment variables:
     CONTINUUM_AUTO_OBSERVE=1        enable auto-observe globally
     CONTINUUM_OBSERVE_PROJECT=name  default project for observations
     CONTINUUM_OBSERVE_METHOD=claude use Claude Haiku to compress (needs ANTHROPIC_API_KEY)
+    CONTINUUM_TG_TOKEN=...         Telegram bot token (from @BotFather)
+    CONTINUUM_TG_CHAT=...          Telegram chat ID  (from @userinfobot)
+    CONTINUUM_DISCORD_WEBHOOK=...  Discord incoming webhook URL
+    CONTINUUM_SLACK_WEBHOOK=...    Slack incoming webhook URL
+    CONTINUUM_WEBHOOK_URL=...      Generic POST webhook URL
+    CONTINUUM_AUTO_MODE=1          activate all automation layers on startup
 """
 from __future__ import annotations
 
@@ -991,6 +1002,191 @@ def smart_resume(
             "Narrow your query or use memory_get(ids=[...]) for specific entries. "
             "Top match: " + hits[0]["task"]
         ),
+    }
+
+
+# ===========================================================================
+# Notifications — Telegram, Discord, Slack, webhook
+# ===========================================================================
+
+@mcp.tool()
+def notify_configure(
+    project: str,
+    telegram_token:   Optional[str] = None,
+    telegram_chat_id: Optional[str] = None,
+    discord_webhook:  Optional[str] = None,
+    slack_webhook:    Optional[str] = None,
+    webhook_url:      Optional[str] = None,
+    errors_only: bool = False,
+) -> dict:
+    """Configure notification channels for a project.
+
+    Stored in the DB — every task that completes for this project will fire
+    a message to the configured channels automatically.  No code changes needed.
+
+    Supports:
+      Telegram — get a bot token from @BotFather, then get your chat_id from
+                 @userinfobot.  Messages arrive as formatted Markdown.
+      Discord  — create an Incoming Webhook in Server Settings → Integrations.
+      Slack    — create an Incoming Webhook app at api.slack.com/apps.
+      Generic  — any URL that accepts a POST with {title, message, task_id, exit_code}.
+
+    Args:
+        project:          Project to configure notifications for
+        telegram_token:   Telegram bot token (from @BotFather)
+        telegram_chat_id: Telegram chat ID (from @userinfobot)
+        discord_webhook:  Discord incoming webhook URL
+        slack_webhook:    Slack incoming webhook URL
+        webhook_url:      Generic webhook URL
+        errors_only:      Only fire on task failure / non-zero exit code
+    """
+    import json
+    from .notify import NotifyConfig
+
+    cfg = NotifyConfig(
+        telegram_token   = telegram_token,
+        telegram_chat_id = telegram_chat_id,
+        discord_webhook  = discord_webhook,
+        slack_webhook    = slack_webhook,
+        webhook_url      = webhook_url,
+        errors_only      = errors_only,
+    )
+    _db.save_notify_config(project, json.dumps({
+        "telegram_token":   telegram_token,
+        "telegram_chat_id": telegram_chat_id,
+        "discord_webhook":  discord_webhook,
+        "slack_webhook":    slack_webhook,
+        "webhook_url":      webhook_url,
+        "errors_only":      errors_only,
+    }))
+
+    channels = []
+    if telegram_token and telegram_chat_id: channels.append("telegram")
+    if discord_webhook:  channels.append("discord")
+    if slack_webhook:    channels.append("slack")
+    if webhook_url:      channels.append("webhook")
+
+    return {
+        "project": project,
+        "channels_configured": channels,
+        "errors_only": errors_only,
+        "message": (
+            f"Notifications configured for '{project}' via {', '.join(channels)}. "
+            "All future task completions will fire automatically."
+            if channels else
+            "No channels configured — pass at least one of telegram_token+telegram_chat_id, "
+            "discord_webhook, slack_webhook, or webhook_url."
+        ),
+        "tip": "Use notify_test(project) to verify channels are working.",
+    }
+
+
+@mcp.tool()
+def notify_when_complete(
+    task_id: str,
+    telegram_token:   Optional[str] = None,
+    telegram_chat_id: Optional[str] = None,
+    discord_webhook:  Optional[str] = None,
+    slack_webhook:    Optional[str] = None,
+    webhook_url:      Optional[str] = None,
+    errors_only: bool = False,
+) -> dict:
+    """Register a one-time notification for when a specific task completes.
+
+    Use this when you want to be alerted about a single task without configuring
+    project-level notifications.  The config is automatically deleted after firing.
+
+    Perfect for: pushing a long training job and wanting a phone message when done,
+    without affecting other tasks.
+
+    Args:
+        task_id:          Task ID returned by forge_push
+        telegram_token:   Telegram bot token
+        telegram_chat_id: Telegram chat ID
+        discord_webhook:  Discord webhook URL
+        slack_webhook:    Slack webhook URL
+        webhook_url:      Generic webhook URL
+        errors_only:      Only fire on failure
+    """
+    import json
+
+    _db.save_task_notify(task_id, json.dumps({
+        "telegram_token":   telegram_token,
+        "telegram_chat_id": telegram_chat_id,
+        "discord_webhook":  discord_webhook,
+        "slack_webhook":    slack_webhook,
+        "webhook_url":      webhook_url,
+        "errors_only":      errors_only,
+    }))
+
+    channels = []
+    if telegram_token and telegram_chat_id: channels.append("telegram")
+    if discord_webhook:  channels.append("discord")
+    if slack_webhook:    channels.append("slack")
+    if webhook_url:      channels.append("webhook")
+
+    return {
+        "task_id": task_id,
+        "channels": channels,
+        "errors_only": errors_only,
+        "message": (
+            f"Will notify via {', '.join(channels)} when task {task_id[:8]} completes."
+            if channels else
+            "No channels specified — notification will not fire."
+        ),
+    }
+
+
+@mcp.tool()
+def notify_test(
+    project: str,
+    message: str = "Continuum notification test — channels are working.",
+) -> dict:
+    """Fire a test notification to verify channel config for a project.
+
+    Uses the project's saved config from notify_configure().  If no project
+    config exists, falls back to environment variables.
+
+    Args:
+        project: Project whose config to test
+        message: Custom message body (optional)
+    """
+    import json
+    from .notify import NotifyConfig, notify
+
+    config_json = _db.get_notify_config(project)
+    if config_json:
+        raw = json.loads(config_json)
+        cfg = NotifyConfig(**raw)
+    else:
+        cfg = NotifyConfig.from_env()
+
+    if not cfg.has_any_channel():
+        return {
+            "project": project,
+            "sent": False,
+            "message": "No channels configured. Use notify_configure() or set env vars.",
+            "env_vars": [
+                "CONTINUUM_TG_TOKEN + CONTINUUM_TG_CHAT",
+                "CONTINUUM_DISCORD_WEBHOOK",
+                "CONTINUUM_SLACK_WEBHOOK",
+                "CONTINUUM_WEBHOOK_URL",
+            ],
+        }
+
+    result = notify(
+        title=f"[{project}] Test notification",
+        message=message,
+        config=cfg,
+        extra={"project": project, "test": True},
+    )
+    return {
+        "project": project,
+        "sent": result.any_sent,
+        "fired": result.fired,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "summary": result.summary(),
     }
 
 
