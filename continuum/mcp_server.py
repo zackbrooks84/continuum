@@ -33,6 +33,13 @@ Tools exposed:
   Sync Files (structured project knowledge):
     sync_files          — write MEMORY.md / DECISIONS.md / TASKS.md to a directory
 
+  Web ↔ Code bridge (portable handoff export/import):
+    export_handoff      — export handoff as portable markdown block with token preview
+    import_web_handoff  — parse + load a web-pasted handoff into local DB
+
+  Claude Dispatch (run headless Claude sessions as tasks):
+    dispatch_claude     — queue a headless `claude --print` session as a forge task
+
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
 
@@ -387,6 +394,11 @@ def handoff(
         "immediate_action": h.immediate_action,
         "watch_out_for": h.watch_out_for,
     }
+    if h.token_estimate > 1500:
+        result["token_warning"] = (
+            f"This handoff is ~{h.token_estimate} tokens. "
+            "Consider using memory_search() + memory_get() for targeted retrieval instead."
+        )
     _maybe_sync(project)
     _maybe_observe("handoff", {"project": project}, result)
     return result
@@ -799,6 +811,245 @@ def sync_files(
         "files_written": [str(p) for p in written.values()],
         "checkpoint_id": cp.id[:8],
         "tip": f"Files auto-update on every checkpoint() and handoff() for '{project}'.",
+    }
+
+
+# ===========================================================================
+# Web ↔ Code bridge — portable handoff markdown export/import
+# ===========================================================================
+
+_HANDOFF_FENCE = "continuum-handoff: v1"
+
+
+def _handoff_to_md(h: "Handoff") -> str:
+    """Render a Handoff as a self-contained markdown block with YAML frontmatter."""
+    watch_lines = "\n".join(f"  - {w}" for w in h.watch_out_for)
+    watch_yaml = f"watch_out_for:\n{watch_lines}" if h.watch_out_for else "watch_out_for: []"
+    frontmatter = (
+        f"---\n"
+        f"{_HANDOFF_FENCE}\n"
+        f"project: {h.project}\n"
+        f"handoff_id: {h.id}\n"
+        f"checkpoint_id: {h.checkpoint_id}\n"
+        f"generated_at: {h.generated_at.isoformat()}\n"
+        f"token_estimate: {h.token_estimate}\n"
+        f"{watch_yaml}\n"
+        f"---\n"
+    )
+    body = (
+        f"## Executive Summary\n\n{h.executive_summary}\n\n"
+        f"## Full Context\n\n{h.full_context}\n\n"
+        f"## Immediate Action\n\n{h.immediate_action}\n"
+    )
+    return frontmatter + "\n" + body
+
+
+def _md_to_handoff(md: str) -> "Handoff":
+    """Parse a continuum handoff markdown block back into a Handoff object."""
+    import re
+    from .models import Handoff as _Handoff
+
+    fm_match = re.search(r"^---\n(.*?)\n---\n", md, re.DOTALL)
+    if not fm_match:
+        raise ValueError("No frontmatter found — expected --- block at top")
+    fm = fm_match.group(1)
+    if _HANDOFF_FENCE not in fm:
+        raise ValueError(f"Not a continuum handoff block (missing '{_HANDOFF_FENCE}')")
+
+    def _fm_val(key: str) -> str:
+        m = re.search(rf"^{key}: (.+)$", fm, re.MULTILINE)
+        return m.group(1).strip() if m else ""
+
+    # Parse watch_out_for list
+    wof_match = re.search(r"watch_out_for:\n((?:  - .+\n?)*)", fm)
+    watch_out_for = []
+    if wof_match:
+        watch_out_for = [
+            line.lstrip("  - ").strip()
+            for line in wof_match.group(1).strip().splitlines()
+            if line.strip().startswith("- ")
+        ]
+
+    body = md[fm_match.end():]
+
+    def _section(heading: str) -> str:
+        m = re.search(rf"## {heading}\n\n(.*?)(?=\n## |\Z)", body, re.DOTALL)
+        return m.group(1).strip() if m else ""
+
+    project     = _fm_val("project")
+    checkpoint_id = _fm_val("checkpoint_id")
+    generated_at_str = _fm_val("generated_at")
+    token_estimate = int(_fm_val("token_estimate") or "0")
+
+    from datetime import datetime, timezone as _tz
+    try:
+        generated_at = datetime.fromisoformat(generated_at_str)
+    except Exception:
+        generated_at = datetime.now(_tz.utc)
+
+    return _Handoff(
+        project=project,
+        checkpoint_id=checkpoint_id,
+        generated_at=generated_at,
+        executive_summary=_section("Executive Summary"),
+        full_context=_section("Full Context"),
+        immediate_action=_section("Immediate Action"),
+        watch_out_for=watch_out_for,
+        token_estimate=token_estimate,
+    )
+
+
+@mcp.tool()
+def export_handoff(
+    project: str,
+    checkpoint_id: Optional[str] = None,
+    warn_tokens: int = 1500,
+) -> dict:
+    """Export a handoff as a portable markdown block.
+
+    The exported block can be pasted into a web UI, GitHub issue, or shared
+    doc. Use import_web_handoff() in any new session to load it back into DB
+    and resume with full context.
+
+    Includes token count preview and a warning if the block is large.
+
+    Args:
+        project: Project to export
+        checkpoint_id: Specific checkpoint (default: latest)
+        warn_tokens: Emit a warning if token estimate exceeds this
+    """
+    from .handoff import generate_handoff as _gen
+
+    if checkpoint_id:
+        cp = _db.get_checkpoint(checkpoint_id)
+        if not cp:
+            return {"error": f"Checkpoint not found: {checkpoint_id}"}
+    else:
+        cp = _db.latest_checkpoint(project)
+        if not cp:
+            return {"error": f"No checkpoints for project '{project}'"}
+
+    h = _gen(cp)
+    md = _handoff_to_md(h)
+    token_estimate = len(md) // 4
+
+    result: dict = {
+        "project": project,
+        "token_estimate": token_estimate,
+        "markdown": md,
+        "tip": "Paste this block anywhere. Load back with: import_web_handoff(md_string=...)",
+    }
+    if token_estimate > warn_tokens:
+        result["token_warning"] = (
+            f"This export is ~{token_estimate} tokens. "
+            f"Injecting it cold uses context budget. "
+            f"Consider memory_search() for targeted retrieval instead."
+        )
+    return result
+
+
+@mcp.tool()
+def import_web_handoff(md_string: str, save: bool = True) -> dict:
+    """Import a handoff markdown block from a web UI, doc, or paste.
+
+    Parses the continuum frontmatter + body, loads the handoff into the local
+    DB, and returns a resume briefing — exactly as if you called handoff().
+
+    Token count preview is always shown before the content is injected so you
+    can decide whether to load it fully or use memory_search() instead.
+
+    Args:
+        md_string: The full markdown block produced by export_handoff()
+        save: Persist the imported handoff into the local DB (default True)
+    """
+    try:
+        h = _md_to_handoff(md_string)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    token_estimate = len(md_string) // 4
+    if save:
+        _db.save_handoff(h)
+
+    result: dict = {
+        "project": h.project,
+        "checkpoint_id": h.checkpoint_id,
+        "token_estimate": token_estimate,
+        "executive_summary": h.executive_summary,
+        "full_context": h.full_context,
+        "immediate_action": h.immediate_action,
+        "watch_out_for": h.watch_out_for,
+        "imported": save,
+        "tip": f"Context loaded for '{h.project}'. Call checkpoint() to start capturing new work.",
+    }
+    if token_estimate > 1500:
+        result["token_warning"] = (
+            f"Injecting ~{token_estimate} tokens. "
+            "This is large — consider loading only executive_summary + immediate_action "
+            "and calling memory_get() for deep context on demand."
+        )
+    return result
+
+
+# ===========================================================================
+# Claude Code dispatch — run headless Claude sessions as forge tasks
+# ===========================================================================
+
+@mcp.tool()
+def dispatch_claude(
+    prompt: str,
+    project: str,
+    name: Optional[str] = None,
+    cwd: Optional[str] = None,
+    auto_checkpoint: bool = True,
+    priority: int = 5,
+    depends_on: Optional[str] = None,
+) -> dict:
+    """Dispatch a headless Claude Code session as a background task.
+
+    Uses `claude --print -p <prompt>` to run Claude autonomously while you're
+    away — the output is captured, stored, and (if auto_checkpoint=True)
+    parsed into a structured checkpoint on completion.
+
+    Claude Code must be installed and on PATH. The session inherits your
+    current environment including any MCP server configuration.
+
+    Args:
+        prompt: The task prompt to send to Claude
+        project: Project to checkpoint results into
+        name: Human-readable task name (default: first 60 chars of prompt)
+        cwd: Working directory for the Claude session
+        auto_checkpoint: Parse Claude's output into a checkpoint on completion
+        priority: Queue priority (1=highest, 10=lowest)
+        depends_on: Task ID that must complete before this dispatches
+    """
+    task_name = name or f"claude: {prompt[:55]}"
+    # Escape the prompt for shell safety using single-quote wrapping
+    safe_prompt = prompt.replace("'", "'\\''")
+    command = f"claude --print -p '{safe_prompt}'"
+
+    task = Task(
+        name=task_name,
+        command=command,
+        cwd=cwd,
+        project=project,
+        auto_checkpoint=auto_checkpoint,
+        priority=priority,
+        depends_on=depends_on,
+        tags=["claude-dispatch"],
+    )
+    _db.push_task(task)
+
+    return {
+        "task_id": task.id,
+        "name": task_name,
+        "project": project,
+        "command": command,
+        "auto_checkpoint": auto_checkpoint,
+        "tip": (
+            "Claude will run headlessly while you're away. "
+            f"Resume with: handoff('{project}') when you return."
+        ),
     }
 
 

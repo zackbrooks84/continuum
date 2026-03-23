@@ -165,6 +165,19 @@ Or with uv (recommended):
 |------|-------------|
 | `sync_files(project, output_dir)` | Write MEMORY.md, DECISIONS.md, TASKS.md to a directory |
 
+### Web ↔ Code Bridge
+
+| Tool | Description |
+|------|-------------|
+| `export_handoff(project)` | Export handoff as portable markdown block with token count preview |
+| `import_web_handoff(md_string)` | Parse + load a web-pasted handoff into local DB |
+
+### Claude Dispatch
+
+| Tool | Description |
+|------|-------------|
+| `dispatch_claude(prompt, project)` | Queue a headless `claude --print` session as a background task |
+
 ---
 
 ## CLI
@@ -379,6 +392,55 @@ continuum sync myapp                    # sync to previously configured dir
 
 Git-friendly: stable format, diffs cleanly, safe to commit and track over time.
 
+### Web ↔ Code shared context bridge
+
+Export a handoff as a portable markdown block — paste it in a GitHub issue, Claude.ai web chat, or any doc. Import it back in any session to resume with full context.
+
+```python
+# In Claude Code — generate the portable block
+block = export_handoff("myapp")
+# → token_estimate: 420
+# → markdown: ---\ncontinuum-handoff: v1\n...
+
+# Paste it anywhere. Come back with it later.
+# In a new session (or different machine):
+import_web_handoff(md_string=block["markdown"])
+# → token_estimate: 420  (preview before it's injected)
+# → executive_summary, full_context, immediate_action ready
+# → token_warning if > 1500 tokens
+```
+
+Token count is always shown before injection. If the block is large, a warning suggests `memory_search()` as a cheaper alternative.
+
+### Dispatch headless Claude sessions
+
+Claude Code runs headlessly with `claude --print`. Continuum can queue these as background tasks — Claude works on a prompt autonomously while you're gone, its output becomes a checkpoint.
+
+```python
+# Queue Claude to research something overnight
+dispatch_claude(
+    prompt="Read the auth module and write a refactoring plan. Focus on testability.",
+    project="myapp",
+    auto_checkpoint=True,  # output becomes structured findings
+    priority=2,
+)
+# → Claude runs headlessly, captures findings
+# → New session: handoff("myapp") → full briefing of what Claude found
+
+# Chain it: build first, then have Claude review the output
+build = forge_push("npm run build", name="build", project="myapp")
+dispatch_claude(
+    prompt="Review the build output in dist/ and report any bundle size regressions",
+    project="myapp",
+    depends_on=build["task_id"],  # waits for build to finish
+)
+```
+
+```bash
+# Or use forge_push directly — same thing under the hood
+continuum push "claude --print -p 'summarize the test failures'" --project myapp --auto-checkpoint
+```
+
 ---
 
 ## Data
@@ -410,6 +472,8 @@ export CONTINUUM_DB=/path/to/custom.db
 - **Auto-inject on session start** — `remember()` gives you a sub-400 token briefing of all active projects. Never start cold again.
 - **Auto-observe** — one `auto_observe_toggle()` call and every tool call is passively captured. Background daemon compresses batches into checkpoints automatically. No manual `checkpoint()` required. Rule-based or Claude Haiku compression.
 - **Auto-sync structured files** — every checkpoint writes MEMORY.md, DECISIONS.md, TASKS.md to your project directory automatically. Git-friendly, diffs cleanly, human-readable.
+- **Web ↔ Code bridge** — export any handoff as a portable markdown block; paste it anywhere (GitHub, Claude.ai, docs); import back in any session. Token count preview + warning before injection.
+- **Claude dispatch** — queue headless Claude sessions (`claude --print`) as background tasks. Claude works autonomously while you're away; output becomes a checkpoint. Chains with `depends_on`.
 - **Dead end propagation** — things you explicitly mark as dead ends survive across sessions and show up in every future handoff. Agents don't repeat past mistakes.
 - **Resource-aware** — daemon checks available RAM before running each task. Skip if low, retry in 10s.
 - **Dependency chains** — `depends_on=<task_id>` for sequencing builds, tests, deploys.
@@ -428,7 +492,7 @@ continuum/
 ├── observer.py     # Auto-observe: passive capture + rule/Claude compression
 ├── handoff.py      # Compact briefing generator
 ├── sync_files.py   # Auto-sync: render MEMORY/DECISIONS/TASKS.md
-├── mcp_server.py   # FastMCP server — all 20 tools in one place
+├── mcp_server.py   # FastMCP server — all 23 tools in one place
 └── cli.py          # Click CLI
 ```
 
