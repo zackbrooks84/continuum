@@ -96,6 +96,18 @@ class ProjectConfig(BaseModel):
     auto_sync: bool = True                   # sync files automatically on checkpoint/handoff
 
 
+class PatternSuggestion(BaseModel):
+    """A recurring decision pattern detected across checkpoints."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    project: str
+    pattern_key: str                         # normalized bigram/phrase
+    frequency: int                           # times seen
+    examples: list[str] = Field(default_factory=list)  # sample decision texts
+    suggested_tag: str = ""                  # auto-derived tag name
+    suggested_rule: str = ""                 # human-readable rule suggestion
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Handoff(BaseModel):
     """<1k token briefing optimised for new-session agent resume."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

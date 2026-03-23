@@ -40,6 +40,15 @@ Tools exposed:
   Claude Dispatch (run headless Claude sessions as tasks):
     dispatch_claude     — queue a headless `claude --print` session as a forge task
 
+  Token Guard (live budget tracking):
+    token_watch         — report usage; auto-checkpoint + system alert at threshold
+
+  Cross-agent (portable handoffs for any agent):
+    cross_agent_handoff — handoff formatted for claude/gpt/gemini/generic
+
+  Pattern Learning (recurring decision intelligence):
+    pattern_suggestions — surface repeated decision patterns with tag/rule suggestions
+
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
 
@@ -546,21 +555,33 @@ def push_and_checkpoint(
 # ===========================================================================
 
 @mcp.tool()
-def memory_search(query: str, limit: int = 10) -> dict:
+def memory_search(
+    query: str,
+    limit: int = 10,
+    tags: Optional[list[str]] = None,
+    exclude_tags: Optional[list[str]] = None,
+) -> dict:
     """Search across all checkpoints using full-text search.
 
     Returns a compact list of matching checkpoint IDs and short summaries —
     designed to be cheap to scan. Use memory_get() to fetch full details
     for the IDs you actually need.
 
+    Tag filtering lets you scope or exclude private/archived checkpoints:
+      tags=["private"]           — only return checkpoints tagged "private"
+      exclude_tags=["archived"]  — skip archived checkpoints
+
     Args:
         query: Search terms (supports FTS5 syntax: quotes, AND/OR/NOT, prefix*)
         limit: Max results to return
+        tags: Only return checkpoints that have ALL of these tags
+        exclude_tags: Skip checkpoints that have ANY of these tags
     """
-    results = _db.search_checkpoints(query, limit=limit)
+    results = _db.search_checkpoints(query, limit=limit, tags=tags, exclude_tags=exclude_tags)
     result = {
         "query": query,
         "count": len(results),
+        "tag_filter": {"include": tags, "exclude": exclude_tags},
         "matches": results,
         "tip": "Use memory_get(ids=[...]) to fetch full details for specific checkpoints.",
     }
@@ -821,8 +842,24 @@ def sync_files(
 _HANDOFF_FENCE = "continuum-handoff: v1"
 
 
-def _handoff_to_md(h: "Handoff") -> str:
+def _system_notify(title: str, message: str) -> None:
+    """Fire a system notification with fallback to alerts log."""
+    try:
+        from plyer import notification
+        notification.notify(title=title, message=message, app_name="Continuum", timeout=10)
+    except Exception:
+        pass
+    try:
+        alerts_path = Path.home() / ".continuum" / "alerts.log"
+        with open(alerts_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now(timezone.utc).isoformat()[:19]}] {title}: {message}\n")
+    except Exception:
+        pass
+
+
+def _handoff_to_md(h: "Handoff", target_agent: str = "claude") -> str:
     """Render a Handoff as a self-contained markdown block with YAML frontmatter."""
+    from .models import Handoff as _Handoff  # type hint only
     watch_lines = "\n".join(f"  - {w}" for w in h.watch_out_for)
     watch_yaml = f"watch_out_for:\n{watch_lines}" if h.watch_out_for else "watch_out_for: []"
     frontmatter = (
@@ -832,15 +869,44 @@ def _handoff_to_md(h: "Handoff") -> str:
         f"handoff_id: {h.id}\n"
         f"checkpoint_id: {h.checkpoint_id}\n"
         f"generated_at: {h.generated_at.isoformat()}\n"
+        f"target_agent: {target_agent}\n"
         f"token_estimate: {h.token_estimate}\n"
         f"{watch_yaml}\n"
         f"---\n"
     )
-    body = (
-        f"## Executive Summary\n\n{h.executive_summary}\n\n"
-        f"## Full Context\n\n{h.full_context}\n\n"
-        f"## Immediate Action\n\n{h.immediate_action}\n"
-    )
+
+    if target_agent == "gpt":
+        body = (
+            f"[SYSTEM CONTEXT — Continuum Handoff for {h.project}]\n\n"
+            f"You are resuming work on project: {h.project}\n\n"
+            f"## Situation\n\n{h.executive_summary}\n\n"
+            f"## What You Need to Know\n\n{h.full_context}\n\n"
+            f"## Your First Action\n\n{h.immediate_action}\n\n"
+            f"## Do NOT Repeat These Dead Ends\n\n"
+            + "\n".join(f"- {w}" for w in h.watch_out_for) + "\n"
+        )
+    elif target_agent == "gemini":
+        body = (
+            f"**Project context for {h.project}**\n\n"
+            f"Background: {h.executive_summary}\n\n"
+            f"Context: {h.full_context}\n\n"
+            f"Task: {h.immediate_action}\n\n"
+            f"Avoid: " + "; ".join(h.watch_out_for) + "\n"
+        )
+    elif target_agent == "generic":
+        body = (
+            f"CONTEXT: {h.executive_summary}\n\n"
+            f"DETAILS: {h.full_context}\n\n"
+            f"ACTION: {h.immediate_action}\n\n"
+            f"AVOID: " + " | ".join(h.watch_out_for) + "\n"
+        )
+    else:  # claude (default)
+        body = (
+            f"## Executive Summary\n\n{h.executive_summary}\n\n"
+            f"## Full Context\n\n{h.full_context}\n\n"
+            f"## Immediate Action\n\n{h.immediate_action}\n"
+        )
+
     return frontmatter + "\n" + body
 
 
@@ -1050,6 +1116,210 @@ def dispatch_claude(
             "Claude will run headlessly while you're away. "
             f"Resume with: handoff('{project}') when you return."
         ),
+    }
+
+
+# ===========================================================================
+# Token guard — live usage tracking + alerts
+# ===========================================================================
+
+@mcp.tool()
+def token_watch(
+    used: int,
+    limit: int,
+    project: Optional[str] = None,
+    warn_at: float = 0.8,
+    critical_at: float = 0.95,
+) -> dict:
+    """Report token usage; auto-checkpoint + system alert when approaching the limit.
+
+    Call this periodically during long sessions to guard against context overflow.
+    At warn_at (default 80%) it saves an emergency checkpoint and fires a system
+    notification so you can start a fresh session before hitting the wall.
+
+    Args:
+        used: Current tokens used in this session
+        limit: Total context window size
+        project: Project to auto-checkpoint on warning (optional but recommended)
+        warn_at: Fraction at which to fire a warning (default 0.8 = 80%)
+        critical_at: Fraction for critical alert (default 0.95 = 95%)
+    """
+    pct = used / limit if limit > 0 else 0
+    _db.save_token_event(project, used, limit, pct)
+
+    level = "ok"
+    if pct >= critical_at:
+        level = "critical"
+    elif pct >= warn_at:
+        level = "warning"
+
+    result: dict = {
+        "tokens_used": used,
+        "tokens_limit": limit,
+        "percent_used": round(pct * 100, 1),
+        "status": level,
+    }
+
+    if level in ("warning", "critical"):
+        msg = f"Token usage at {pct*100:.0f}% ({used:,}/{limit:,})"
+        result["alert"] = msg
+
+        if project:
+            cp = Checkpoint(
+                project=project,
+                current_task=f"[{level.upper()}] Token budget at {pct*100:.0f}%",
+                goal="[auto] Preserve state before context window fills",
+                status="blocked",
+                context=f"Token usage: {used:,}/{limit:,} ({pct*100:.0f}%). "
+                        f"Auto-checkpoint triggered by token_watch.",
+                findings=[f"Session reached {pct*100:.0f}% token capacity"],
+                next_steps=[
+                    "Call handoff() to generate a resume briefing",
+                    "Start a fresh session and call handoff() to reload context",
+                ],
+                tags=[level, "token-warning"],
+                agent="token-watch",
+            )
+            _db.save_checkpoint(cp)
+            result["auto_checkpoint_id"] = cp.id[:8]
+
+        notify_title = f"Continuum: {level.capitalize()} — {pct*100:.0f}% tokens used"
+        notify_msg = f"{project or 'Session'}: {used:,}/{limit:,} tokens"
+        if level == "critical":
+            notify_msg += " — START NEW SESSION NOW"
+        _system_notify(notify_title, notify_msg)
+
+        result["recommended_action"] = (
+            "Call handoff() immediately and start a fresh session."
+            if level == "critical"
+            else f"Consider calling handoff('{project}') soon and opening a new session."
+            if project
+            else "Consider saving a checkpoint and opening a new session."
+        )
+
+    return result
+
+
+# ===========================================================================
+# Cross-agent mode — portable handoffs for any agent type
+# ===========================================================================
+
+@mcp.tool()
+def cross_agent_handoff(
+    project: str,
+    target_agent: str,
+    checkpoint_id: Optional[str] = None,
+    warn_tokens: int = 1500,
+) -> dict:
+    """Generate a handoff formatted for a specific agent type.
+
+    Produces the same portable markdown block as export_handoff() but with
+    framing and structure optimised for the target agent's prompt style.
+
+    Formats:
+      claude   — standard continuum format (default)
+      gpt      — ChatGPT/OpenAI style with system message framing
+      gemini   — Google Gemini style, bold headers, inline avoid list
+      generic  — plain text, CONTEXT/DETAILS/ACTION/AVOID, works anywhere
+
+    Args:
+        project: Project to generate handoff for
+        target_agent: One of: claude, gpt, gemini, generic
+        checkpoint_id: Specific checkpoint (default: latest)
+        warn_tokens: Token count threshold for a size warning
+    """
+    from .handoff import generate_handoff as _gen
+
+    valid = ("claude", "gpt", "gemini", "generic")
+    if target_agent not in valid:
+        return {"error": f"target_agent must be one of: {', '.join(valid)}"}
+
+    if checkpoint_id:
+        cp = _db.get_checkpoint(checkpoint_id)
+        if not cp:
+            return {"error": f"Checkpoint not found: {checkpoint_id}"}
+    else:
+        cp = _db.latest_checkpoint(project)
+        if not cp:
+            return {"error": f"No checkpoints for project '{project}'"}
+
+    h = _gen(cp, target_agent=target_agent)
+    md = _handoff_to_md(h, target_agent=target_agent)
+    token_estimate = len(md) // 4
+
+    result: dict = {
+        "project": project,
+        "target_agent": target_agent,
+        "token_estimate": token_estimate,
+        "markdown": md,
+        "tip": f"Paste this block into a {target_agent.capitalize()} session to resume instantly.",
+    }
+    if token_estimate > warn_tokens:
+        result["token_warning"] = (
+            f"~{token_estimate} tokens — consider sharing only the "
+            f"executive_summary + immediate_action for a lighter load."
+        )
+    return result
+
+
+# ===========================================================================
+# Pattern learning — surface recurring decision patterns
+# ===========================================================================
+
+@mcp.tool()
+def pattern_suggestions(
+    project: str,
+    min_frequency: int = 5,
+) -> dict:
+    """Return recurring decision patterns detected across this project's checkpoints.
+
+    The observer thread silently analyzes decisions after each compression cycle.
+    When a pattern appears 5+ times, it surfaces here with a suggested tag and rule.
+
+    Use these to build consistent mental models, auto-tag future checkpoints,
+    or turn repeated decisions into standing rules.
+
+    Args:
+        project: Project to analyze
+        min_frequency: Minimum occurrences before a pattern is surfaced (default 5)
+    """
+    patterns = _db.get_patterns(project, min_frequency=min_frequency)
+
+    if not patterns:
+        # Run analysis on-demand if nothing cached yet
+        from .observer import analyze_patterns
+        try:
+            analyze_patterns(_db, project, min_frequency=min_frequency)
+            patterns = _db.get_patterns(project, min_frequency=min_frequency)
+        except Exception:
+            pass
+
+    if not patterns:
+        return {
+            "project": project,
+            "pattern_count": 0,
+            "message": (
+                f"No patterns yet with frequency >= {min_frequency}. "
+                f"Patterns emerge after {min_frequency}+ similar decisions. "
+                f"Keep checkpointing decisions and they'll surface automatically."
+            ),
+        }
+
+    return {
+        "project": project,
+        "pattern_count": len(patterns),
+        "patterns": [
+            {
+                "pattern": p.pattern_key,
+                "frequency": p.frequency,
+                "suggested_tag": f"#{p.suggested_tag}",
+                "suggested_rule": p.suggested_rule,
+                "examples": p.examples[:2],
+                "last_seen": p.last_seen.isoformat()[:10],
+            }
+            for p in patterns
+        ],
+        "tip": "Use these patterns to tag checkpoints consistently or encode them as team rules.",
     }
 
 

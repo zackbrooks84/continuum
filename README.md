@@ -178,6 +178,24 @@ Or with uv (recommended):
 |------|-------------|
 | `dispatch_claude(prompt, project)` | Queue a headless `claude --print` session as a background task |
 
+### Token Guard
+
+| Tool | Description |
+|------|-------------|
+| `token_watch(used, limit, project)` | Track token usage; auto-checkpoint + system alert at 80%/95% |
+
+### Cross-Agent
+
+| Tool | Description |
+|------|-------------|
+| `cross_agent_handoff(project, target_agent)` | Handoff formatted for `claude` / `gpt` / `gemini` / `generic` |
+
+### Pattern Learning
+
+| Tool | Description |
+|------|-------------|
+| `pattern_suggestions(project)` | Surface recurring decision patterns with suggested tags and rules |
+
 ---
 
 ## CLI
@@ -441,6 +459,66 @@ dispatch_claude(
 continuum push "claude --print -p 'summarize the test failures'" --project myapp --auto-checkpoint
 ```
 
+### Token guard: never get cut off mid-thought
+
+Call `token_watch()` periodically in long sessions. At 80% it auto-saves a checkpoint and fires a system notification. At 95% it tells you to start a new session immediately.
+
+```python
+# Call periodically during long sessions
+token_watch(used=62000, limit=80000, project="myapp")
+# → status: "warning"
+# → auto_checkpoint_id: "a1b2c3d4"  (saved automatically)
+# → system notification fired
+# → recommended_action: "Call handoff('myapp') soon and open a new session"
+
+# Critical threshold
+token_watch(used=77000, limit=80000, project="myapp")
+# → status: "critical"
+# → system notification: "myapp — START NEW SESSION NOW"
+```
+
+Alerts also write to `~/.continuum/alerts.log` as a fallback if the system tray isn't available.
+
+### Cross-agent: share context with any AI
+
+Export a handoff formatted for ChatGPT, Gemini, or any agent — same data, different framing.
+
+```python
+# For a ChatGPT session
+cross_agent_handoff("myapp", target_agent="gpt")
+# → [SYSTEM CONTEXT — Continuum Handoff for myapp]
+# → You are resuming work on project: myapp
+# → ## Situation / ## What You Need to Know / ## Your First Action
+
+# For minimal cross-platform paste
+cross_agent_handoff("myapp", target_agent="generic")
+# → CONTEXT: ...  DETAILS: ...  ACTION: ...  AVOID: ...
+```
+
+### Pattern learning: the agent that learns your habits
+
+After 5+ similar decisions across checkpoints, recurring patterns surface automatically.
+
+```python
+# After weeks of work, see what patterns have emerged
+pattern_suggestions("myapp")
+# → {
+#     "pattern_count": 3,
+#     "patterns": [
+#       {
+#         "pattern": "auth middleware",
+#         "frequency": 7,
+#         "suggested_tag": "#auth-middleware",
+#         "suggested_rule": "When making decisions about 'auth middleware', consider tagging with #auth-middleware",
+#         "examples": ["avoid modifying auth middleware directly", "auth middleware tested separately"]
+#       },
+#       ...
+#     ]
+#   }
+```
+
+Patterns are detected silently by the observer thread — zero configuration. They tell you where your project has structural hot spots and help you encode institutional knowledge as standing rules.
+
 ---
 
 ## Data
@@ -474,6 +552,10 @@ export CONTINUUM_DB=/path/to/custom.db
 - **Auto-sync structured files** — every checkpoint writes MEMORY.md, DECISIONS.md, TASKS.md to your project directory automatically. Git-friendly, diffs cleanly, human-readable.
 - **Web ↔ Code bridge** — export any handoff as a portable markdown block; paste it anywhere (GitHub, Claude.ai, docs); import back in any session. Token count preview + warning before injection.
 - **Claude dispatch** — queue headless Claude sessions (`claude --print`) as background tasks. Claude works autonomously while you're away; output becomes a checkpoint. Chains with `depends_on`.
+- **Token guard** — `token_watch()` tracks context budget live; auto-checkpoints at 80% and fires a system notification so you never get cut off mid-thought.
+- **Private tag filters** — `memory_search(query, tags=["private"])` / `exclude_tags=["archived"]` to scope or hide checkpoints in search results.
+- **Cross-agent handoffs** — `cross_agent_handoff(project, target_agent="gpt")` exports context formatted for ChatGPT, Gemini, or any generic agent.
+- **Pattern learning** — observer thread silently analyzes decisions after each compression. After 5+ similar choices, surfaces a suggested tag and standing rule via `pattern_suggestions()`.
 - **Dead end propagation** — things you explicitly mark as dead ends survive across sessions and show up in every future handoff. Agents don't repeat past mistakes.
 - **Resource-aware** — daemon checks available RAM before running each task. Skip if low, retry in 10s.
 - **Dependency chains** — `depends_on=<task_id>` for sequencing builds, tests, deploys.
@@ -492,7 +574,7 @@ continuum/
 ├── observer.py     # Auto-observe: passive capture + rule/Claude compression
 ├── handoff.py      # Compact briefing generator
 ├── sync_files.py   # Auto-sync: render MEMORY/DECISIONS/TASKS.md
-├── mcp_server.py   # FastMCP server — all 23 tools in one place
+├── mcp_server.py   # FastMCP server — all 27 tools in one place
 └── cli.py          # Click CLI
 ```
 

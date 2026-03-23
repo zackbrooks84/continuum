@@ -113,6 +113,58 @@ def compress_claude(observations: list[dict], model: str, api_key: Optional[str]
 # Background compressor thread
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Pattern learning
+# ---------------------------------------------------------------------------
+
+def analyze_patterns(db, project: str, min_frequency: int = 5) -> None:
+    """Scan recent decisions for recurring bigrams and save pattern suggestions."""
+    import re
+    from collections import Counter
+    from datetime import datetime, timezone
+    from .models import PatternSuggestion
+
+    cps = db.list_checkpoints(project=project, limit=100)
+    decision_texts = [
+        d.what.lower()
+        for cp in cps
+        for d in cp.decisions
+    ]
+    if len(decision_texts) < min_frequency:
+        return
+
+    bigram_counter: Counter = Counter()
+    for text in decision_texts:
+        words = re.findall(r"\b[a-z]{3,}\b", text)
+        for i in range(len(words) - 1):
+            bigram_counter[f"{words[i]} {words[i+1]}"] += 1
+
+    # Skip generic stop-bigram pairs
+    _STOP = {"this is", "it is", "we are", "to be", "of the", "in the", "for the",
+             "and the", "with the", "that the", "from the", "have been"}
+
+    now = datetime.now(timezone.utc)
+    for bigram, count in bigram_counter.most_common(20):
+        if count < min_frequency or bigram in _STOP:
+            continue
+        examples = [t for t in decision_texts if bigram in t][:3]
+        tag = bigram.replace(" ", "-")
+        rule = f"When making decisions about '{bigram}', consider tagging with #{tag}"
+        p = PatternSuggestion(
+            project=project,
+            pattern_key=bigram,
+            frequency=count,
+            examples=examples,
+            suggested_tag=tag,
+            suggested_rule=rule,
+            last_seen=now,
+        )
+        try:
+            db.upsert_pattern(p)
+        except Exception:
+            pass
+
+
 class ObserverThread:
     """Background thread that compresses accumulated observations into checkpoints."""
 
@@ -178,3 +230,9 @@ class ObserverThread:
             )
             self.db.save_checkpoint(cp)
             self.db.mark_observations_compressed([o["id"] for o in batch])
+
+            # After each compression, scan for recurring decision patterns
+            try:
+                analyze_patterns(self.db, project)
+            except Exception:
+                pass

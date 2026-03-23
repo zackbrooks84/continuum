@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig
+from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig, PatternSuggestion
 
 DEFAULT_DIR = Path.home() / ".continuum"
 DEFAULT_DB  = DEFAULT_DIR / "continuum.db"
@@ -97,6 +97,28 @@ class DB:
             );
             CREATE INDEX IF NOT EXISTS idx_obs_project_comp
                 ON observations(project, compressed, timestamp);
+
+            CREATE TABLE IF NOT EXISTS patterns (
+                id          TEXT PRIMARY KEY,
+                project     TEXT NOT NULL,
+                pattern_key TEXT NOT NULL,
+                frequency   INTEGER NOT NULL DEFAULT 1,
+                data        TEXT NOT NULL,
+                last_seen   TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_patterns_project_key
+                ON patterns(project, pattern_key);
+
+            CREATE TABLE IF NOT EXISTS token_events (
+                id         TEXT PRIMARY KEY,
+                project    TEXT,
+                used       INTEGER NOT NULL,
+                limit_     INTEGER NOT NULL,
+                pct        REAL NOT NULL,
+                timestamp  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_token_project
+                ON token_events(project, timestamp DESC);
         """)
         self._conn.commit()
 
@@ -270,29 +292,50 @@ class DB:
     # Memory search (FTS + timeline + bulk get)
     # ------------------------------------------------------------------
 
-    def search_checkpoints(self, query: str, limit: int = 10) -> list[dict]:
-        """Full-text search over checkpoints. Returns compact summaries."""
+    def search_checkpoints(
+        self,
+        query: str,
+        limit: int = 10,
+        tags: Optional[list[str]] = None,
+        exclude_tags: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Full-text search over checkpoints. Returns compact summaries.
+
+        Pass tags/exclude_tags to filter by checkpoint tags (private, archived, etc.).
+        """
+        import json as _json
+        # Fetch extra rows when filtering so we can hit the limit after tag pruning
+        fetch_limit = limit * 5 if (tags or exclude_tags) else limit
         rows = self._conn.execute(
             """
-            SELECT f.id, f.project, f.current_task, f.goal, c.timestamp
+            SELECT f.id, f.project, f.current_task, f.goal, c.timestamp, c.data
             FROM checkpoints_fts f
             JOIN checkpoints c ON c.id = f.id
             WHERE checkpoints_fts MATCH ?
             ORDER BY rank
             LIMIT ?
             """,
-            (query, limit),
+            (query, fetch_limit),
         ).fetchall()
-        return [
-            {
+
+        results = []
+        for r in rows:
+            if tags or exclude_tags:
+                cp_tags = _json.loads(r["data"]).get("tags", [])
+                if tags and not any(t in cp_tags for t in tags):
+                    continue
+                if exclude_tags and any(t in cp_tags for t in exclude_tags):
+                    continue
+            results.append({
                 "id": r["id"],
                 "project": r["project"],
                 "task": r["current_task"],
                 "goal": r["goal"],
                 "timestamp": r["timestamp"],
-            }
-            for r in rows
-        ]
+            })
+            if len(results) >= limit:
+                break
+        return results
 
     def checkpoint_timeline(self, checkpoint_id: str, window: int = 5) -> list[Checkpoint]:
         """Return up to `window` checkpoints before and after the given one in the same project."""
@@ -432,6 +475,73 @@ class DB:
                 " FROM observations",
             ).fetchone()
         return {"total": row["total"] or 0, "pending": row["pending"] or 0}
+
+    # ------------------------------------------------------------------
+    # Pattern learning
+    # ------------------------------------------------------------------
+
+    def upsert_pattern(self, p: PatternSuggestion) -> None:
+        existing = self._conn.execute(
+            "SELECT id, frequency FROM patterns WHERE project=? AND pattern_key=?",
+            (p.project, p.pattern_key),
+        ).fetchone()
+        if existing:
+            new_freq = max(existing["frequency"], p.frequency)
+            self._conn.execute(
+                "UPDATE patterns SET frequency=?, data=?, last_seen=? WHERE id=?",
+                (new_freq, p.model_dump_json(), p.last_seen.isoformat(), existing["id"]),
+            )
+        else:
+            self._conn.execute(
+                "INSERT INTO patterns(id, project, pattern_key, frequency, data, last_seen)"
+                " VALUES (?,?,?,?,?,?)",
+                (p.id, p.project, p.pattern_key, p.frequency,
+                 p.model_dump_json(), p.last_seen.isoformat()),
+            )
+        self._conn.commit()
+
+    def get_patterns(self, project: str, min_frequency: int = 5) -> list[PatternSuggestion]:
+        rows = self._conn.execute(
+            "SELECT data FROM patterns WHERE project=? AND frequency >= ?"
+            " ORDER BY frequency DESC",
+            (project, min_frequency),
+        ).fetchall()
+        return [PatternSuggestion.model_validate_json(r["data"]) for r in rows]
+
+    def all_project_patterns(self, min_frequency: int = 5) -> list[PatternSuggestion]:
+        rows = self._conn.execute(
+            "SELECT data FROM patterns WHERE frequency >= ? ORDER BY frequency DESC",
+            (min_frequency,),
+        ).fetchall()
+        return [PatternSuggestion.model_validate_json(r["data"]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Token events
+    # ------------------------------------------------------------------
+
+    def save_token_event(
+        self, project: Optional[str], used: int, limit: int, pct: float
+    ) -> str:
+        ev_id = str(uuid.uuid4())[:8]
+        self._conn.execute(
+            "INSERT INTO token_events(id, project, used, limit_, pct, timestamp)"
+            " VALUES (?,?,?,?,?,?)",
+            (ev_id, project, used, limit, pct, datetime.now(timezone.utc).isoformat()),
+        )
+        self._conn.commit()
+        return ev_id
+
+    def token_history(self, project: Optional[str] = None, limit: int = 20) -> list[dict]:
+        if project:
+            rows = self._conn.execute(
+                "SELECT * FROM token_events WHERE project=? ORDER BY timestamp DESC LIMIT ?",
+                (project, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM token_events ORDER BY timestamp DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self) -> None:
         self._conn.close()
