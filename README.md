@@ -196,6 +196,16 @@ Or with uv (recommended):
 |------|-------------|
 | `pattern_suggestions(project)` | Surface recurring decision patterns with suggested tags and rules |
 
+### Notifications
+
+| Tool | Description |
+|------|-------------|
+| `notify_configure(project, telegram_token, ...)` | Store channel config — all tasks auto-notify on complete |
+| `notify_when_complete(task_id, ...)` | One-time task notification — fires and self-deletes |
+| `notify_test(project)` | Fire a test message to verify channels are working |
+
+Supported channels: **Telegram**, **Discord**, **Slack**, and any **generic webhook**.
+
 ### Fully Automatic Mode
 
 | Tool | Description |
@@ -502,6 +512,42 @@ cross_agent_handoff("myapp", target_agent="generic")
 # → CONTEXT: ...  DETAILS: ...  ACTION: ...  AVOID: ...
 ```
 
+### Notifications: know the moment work is done
+
+Configure once — fire forever.  Every task completion triggers a message to whatever channel you use.
+
+```python
+# One-time setup per project
+notify_configure(
+    "myapp",
+    telegram_token="bot123:ABC...",
+    telegram_chat_id="987654",       # your Telegram user ID
+    discord_webhook="https://discord.com/api/webhooks/...",
+    errors_only=False,               # notify on success AND failure
+)
+
+# Push a long task — you'll get a Telegram/Discord message when it's done
+forge_push("python train.py --epochs 100", project="myapp", auto_checkpoint=True)
+# → task_id: abc12345
+# [hours later, on your phone]
+# → ✅ [myapp] Task complete — abc12345 finished successfully
+# → Epoch 100/100 - loss: 0.043 - val_loss: 0.051
+
+# One-time notification for a specific task
+notify_when_complete("abc12345", discord_webhook="https://discord.com/api/webhooks/...")
+
+# Verify channels work
+notify_test("myapp")
+# → {sent: true, fired: ["telegram", "discord"], failed: [], summary: "sent via telegram, discord"}
+```
+
+Or just use environment variables — zero code:
+```bash
+export CONTINUUM_TG_TOKEN=bot123:ABC...
+export CONTINUUM_TG_CHAT=987654
+# Now every task completion fires a Telegram message automatically
+```
+
 ### Pattern learning: the agent that learns your habits
 
 After 5+ similar decisions across checkpoints, recurring patterns surface automatically.
@@ -601,6 +647,7 @@ export CONTINUUM_DB=/path/to/custom.db
 - **Auto-sync structured files** — every checkpoint writes MEMORY.md, DECISIONS.md, TASKS.md to your project directory automatically. Git-friendly, diffs cleanly, human-readable.
 - **Web ↔ Code bridge** — export any handoff as a portable markdown block; paste it anywhere (GitHub, Claude.ai, docs); import back in any session. Token count preview + warning before injection.
 - **Claude dispatch** — queue headless Claude sessions (`claude --print`) as background tasks. Claude works autonomously while you're away; output becomes a checkpoint. Chains with `depends_on`.
+- **Notifications** — `notify_configure(project, telegram_token=..., discord_webhook=...)` and every future task completion fires a message to Telegram, Discord, Slack, or any webhook. Know the moment your long-running job finishes — even when you're on your phone.
 - **Token guard** — `token_watch()` tracks context budget live; auto-checkpoints at 80% and fires a system notification so you never get cut off mid-thought.
 - **Private tag filters** — `memory_search(query, tags=["private"])` / `exclude_tags=["archived"]` to scope or hide checkpoints in search results.
 - **Cross-agent handoffs** — `cross_agent_handoff(project, target_agent="gpt")` exports context formatted for ChatGPT, Gemini, or any generic agent.
@@ -624,7 +671,8 @@ continuum/
 ├── observer.py     # Auto-observe: passive capture + rule/Claude compression
 ├── handoff.py      # Compact briefing generator
 ├── sync_files.py   # Auto-sync: render MEMORY/DECISIONS/TASKS.md
-├── mcp_server.py   # FastMCP server — all 29 tools in one place
+├── notify.py       # Notification dispatcher: Telegram, Discord, Slack, webhook
+├── mcp_server.py   # FastMCP server — all 32 tools in one place
 └── cli.py          # Click CLI
 ```
 

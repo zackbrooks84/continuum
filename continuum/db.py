@@ -87,6 +87,16 @@ class DB:
                 data    TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS notify_configs (
+                project TEXT PRIMARY KEY,
+                data    TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS task_notify (
+                task_id TEXT PRIMARY KEY,
+                data    TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS observations (
                 id         TEXT PRIMARY KEY,
                 project    TEXT NOT NULL,
@@ -542,6 +552,41 @@ class DB:
                 "SELECT * FROM token_events ORDER BY timestamp DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Notification config (per-project + per-task)
+    # ------------------------------------------------------------------
+
+    def save_notify_config(self, project: str, config_json: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO notify_configs(project, data) VALUES (?,?)",
+            (project, config_json),
+        )
+        self._conn.commit()
+
+    def get_notify_config(self, project: str) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT data FROM notify_configs WHERE project=?", (project,)
+        ).fetchone()
+        return row["data"] if row else None
+
+    def save_task_notify(self, task_id: str, config_json: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO task_notify(task_id, data) VALUES (?,?)",
+            (task_id, config_json),
+        )
+        self._conn.commit()
+
+    def pop_task_notify(self, task_id: str) -> Optional[str]:
+        """Return and delete the notify config for a task (called after firing)."""
+        row = self._conn.execute(
+            "SELECT data FROM task_notify WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if row:
+            self._conn.execute("DELETE FROM task_notify WHERE task_id=?", (task_id,))
+            self._conn.commit()
+            return row["data"]
+        return None
 
     def close(self) -> None:
         self._conn.close()
