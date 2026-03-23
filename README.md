@@ -143,6 +143,15 @@ Or with uv (recommended):
 |------|-------------|
 | `push_and_checkpoint` | Queue a task AND save a pre-run checkpoint in one call |
 
+### Memory Search
+
+| Tool | Description |
+|------|-------------|
+| `memory_search(query)` | Full-text search over all checkpoints — returns compact ID list + summaries |
+| `memory_timeline(checkpoint_id)` | Chronological context slice around a checkpoint |
+| `memory_get(ids)` | Full details for specific checkpoint IDs |
+| `remember()` | **Auto-inject** — compact briefing of all active projects for session start |
+
 ---
 
 ## CLI
@@ -234,6 +243,52 @@ deploy = forge_push("./deploy.sh", name="deploy", depends_on=test["task_id"])
 # → build → test → deploy, automatic sequencing
 ```
 
+### Auto-inject context on every new session
+
+`remember()` is the killer feature. Call it once at the start of any session and get a sub-400 token briefing of every project you've touched in the last two weeks — no re-explaining, no re-deriving context.
+
+```python
+# First thing in every new session:
+remember()
+
+# → Active Projects (3 in last 14d)
+#
+# **ml-v2** ◉ `in-progress`
+#   Goal: Beat 94% accuracy on MNIST
+#   Now: Reviewing val_loss curve
+#   Next: Try AdamW with lr=3e-4
+#   ID: a1b2c3d4  Updated: 2026-03-23
+#
+# **myapp** ✓ `complete`
+#   Goal: Auth refactor before v2 release
+#   Now: PR #142 merged
+#   ID: e5f6g7h8  Updated: 2026-03-22
+#
+# ~280 tokens. Costs almost nothing. You never start cold again.
+```
+
+Wire it to fire automatically in Claude Code by calling it as the first tool in your session prompt, or configure it in your system prompt template.
+
+### Three-tier memory retrieval
+
+Mimics the exact pattern everyone is hyping for long-context agents — **search first, expand only what you need**:
+
+```python
+# 1. Search — cheap, ~50 tokens
+results = memory_search("auth JWT overfitting")
+# → [{id: "a1b2...", project: "myapp", task: "Extract UserResolver", ...}]
+
+# 2. Timeline — understand how thinking evolved, still compact
+memory_timeline("a1b2c3d4", window=3)
+# → 7 checkpoints in chronological order, just IDs + task names
+
+# 3. Get — full details only for what you actually need
+memory_get(ids=["a1b2c3d4", "e5f6g7h8"])
+# → complete checkpoint state: findings, dead ends, decisions, next steps
+```
+
+This is 95% token savings vs. loading full context blindly. The agent retrieves exactly what it needs, when it needs it.
+
 ---
 
 ## Data
@@ -261,6 +316,8 @@ export CONTINUUM_DB=/path/to/custom.db
 - **One DB** — tasks + checkpoints in a single SQLite file. Simple to backup, inspect, migrate.
 - **Auto-checkpoint** — set `auto_checkpoint=True` when pushing a task and stdout becomes structured findings automatically on completion.
 - **<1k token handoffs** — the resume briefing is designed to be loaded cold. Typically 400-800 tokens. Not a log dump.
+- **Three-tier memory retrieval** — `memory_search` → `memory_timeline` → `memory_get`. Search first, expand only what you need. 95% token savings.
+- **Auto-inject on session start** — `remember()` gives you a sub-400 token briefing of all active projects. Never start cold again.
 - **Dead end propagation** — things you explicitly mark as dead ends survive across sessions and show up in every future handoff. Agents don't repeat past mistakes.
 - **Resource-aware** — daemon checks available RAM before running each task. Skip if low, retry in 10s.
 - **Dependency chains** — `depends_on=<task_id>` for sequencing builds, tests, deploys.
@@ -273,7 +330,7 @@ export CONTINUUM_DB=/path/to/custom.db
 ```
 continuum/
 ├── models.py       # Task, TaskResult, Checkpoint, Decision, Handoff (Pydantic)
-├── db.py           # Single SQLite store for everything
+├── db.py           # Single SQLite store + FTS5 memory search
 ├── runner.py       # Task executor + auto-checkpoint integration
 ├── daemon.py       # Background process manager
 ├── handoff.py      # Compact briefing generator

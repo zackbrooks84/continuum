@@ -69,6 +69,17 @@ class DB:
             );
             CREATE INDEX IF NOT EXISTS idx_ho_project
                 ON handoffs(project, generated_at DESC);
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS checkpoints_fts
+            USING fts5(
+                id,
+                project,
+                current_task,
+                goal,
+                context,
+                findings_text,
+                tokenize='porter ascii'
+            );
         """)
         self._conn.commit()
 
@@ -176,6 +187,13 @@ class DB:
             "INSERT OR REPLACE INTO checkpoints(id, project, timestamp, data) VALUES (?,?,?,?)",
             (cp.id, cp.project, cp.timestamp.isoformat(), cp.model_dump_json())
         )
+        # Keep FTS index in sync
+        findings_text = " ".join(cp.findings + cp.dead_ends + cp.next_steps)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO checkpoints_fts(id, project, current_task, goal, context, findings_text)"
+            " VALUES (?,?,?,?,?,?)",
+            (cp.id, cp.project, cp.current_task, cp.goal, cp.context, findings_text)
+        )
         self._conn.commit()
         return cp
 
@@ -230,6 +248,100 @@ class DB:
             (project,)
         ).fetchone()
         return Handoff.model_validate_json(row["data"]) if row else None
+
+    # ------------------------------------------------------------------
+    # Memory search (FTS + timeline + bulk get)
+    # ------------------------------------------------------------------
+
+    def search_checkpoints(self, query: str, limit: int = 10) -> list[dict]:
+        """Full-text search over checkpoints. Returns compact summaries."""
+        rows = self._conn.execute(
+            """
+            SELECT f.id, f.project, f.current_task, f.goal, c.timestamp
+            FROM checkpoints_fts f
+            JOIN checkpoints c ON c.id = f.id
+            WHERE checkpoints_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (query, limit),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "project": r["project"],
+                "task": r["current_task"],
+                "goal": r["goal"],
+                "timestamp": r["timestamp"],
+            }
+            for r in rows
+        ]
+
+    def checkpoint_timeline(self, checkpoint_id: str, window: int = 5) -> list[Checkpoint]:
+        """Return up to `window` checkpoints before and after the given one in the same project."""
+        row = self._conn.execute(
+            "SELECT project, timestamp FROM checkpoints WHERE id=?", (checkpoint_id,)
+        ).fetchone()
+        if not row:
+            return []
+        project, ts = row["project"], row["timestamp"]
+
+        before = self._conn.execute(
+            "SELECT data FROM checkpoints WHERE project=? AND timestamp < ?"
+            " ORDER BY timestamp DESC LIMIT ?",
+            (project, ts, window),
+        ).fetchall()
+        after = self._conn.execute(
+            "SELECT data FROM checkpoints WHERE project=? AND timestamp > ?"
+            " ORDER BY timestamp ASC LIMIT ?",
+            (project, ts, window),
+        ).fetchall()
+        pivot = self._conn.execute(
+            "SELECT data FROM checkpoints WHERE id=?", (checkpoint_id,)
+        ).fetchone()
+
+        ordered = list(reversed(before)) + ([pivot] if pivot else []) + after
+        return [Checkpoint.model_validate_json(r["data"]) for r in ordered]
+
+    def get_checkpoints_by_ids(self, ids: list[str]) -> list[Checkpoint]:
+        """Fetch full checkpoint details for a list of IDs."""
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT data FROM checkpoints WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        return [Checkpoint.model_validate_json(r["data"]) for r in rows]
+
+    def recent_project_summaries(self, days: int = 14) -> list[dict]:
+        """Compact summary of all projects active in the last N days."""
+        from datetime import timedelta, timezone
+        from datetime import datetime as dt
+        cutoff = (dt.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = self._conn.execute(
+            """
+            SELECT project, MAX(timestamp) as latest, data
+            FROM checkpoints
+            WHERE timestamp >= ?
+            GROUP BY project
+            ORDER BY latest DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+        summaries = []
+        for r in rows:
+            cp = Checkpoint.model_validate_json(r["data"])
+            summaries.append({
+                "project": cp.project,
+                "status": cp.status,
+                "task": cp.current_task,
+                "goal": cp.goal,
+                "next_step": cp.next_steps[0] if cp.next_steps else None,
+                "dead_ends": len(cp.dead_ends),
+                "last_updated": r["latest"],
+                "checkpoint_id": cp.id,
+            })
+        return summaries
 
     def close(self) -> None:
         self._conn.close()

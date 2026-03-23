@@ -20,6 +20,12 @@ Tools exposed:
   Hybrid (push + checkpoint in one call):
     push_and_checkpoint — queue a task AND save a pre-run checkpoint together
 
+  Memory (three-tier retrieval):
+    memory_search       — FTS search, returns compact ID + summary list
+    memory_timeline     — chronological context slice around a checkpoint
+    memory_get          — full details for specific IDs
+    remember            — auto-inject briefing for session start
+
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
 """
@@ -460,6 +466,141 @@ def push_and_checkpoint(
         "checkpoint_id": cp.id,
         "project": project,
         "message": f"Task queued and checkpoint saved. Resume with: continuum resume {project}",
+    }
+
+
+# ===========================================================================
+# Memory — search, timeline, get, remember
+# ===========================================================================
+
+@mcp.tool()
+def memory_search(query: str, limit: int = 10) -> dict:
+    """Search across all checkpoints using full-text search.
+
+    Returns a compact list of matching checkpoint IDs and short summaries —
+    designed to be cheap to scan. Use memory_get() to fetch full details
+    for the IDs you actually need.
+
+    Args:
+        query: Search terms (supports FTS5 syntax: quotes, AND/OR/NOT, prefix*)
+        limit: Max results to return
+    """
+    results = _db.search_checkpoints(query, limit=limit)
+    return {
+        "query": query,
+        "count": len(results),
+        "matches": results,
+        "tip": "Use memory_get(ids=[...]) to fetch full details for specific checkpoints.",
+    }
+
+
+@mcp.tool()
+def memory_timeline(checkpoint_id: str, window: int = 5) -> dict:
+    """Return a chronological context slice around a checkpoint.
+
+    Fetches up to `window` checkpoints before and after the given one
+    within the same project — useful for understanding how thinking evolved.
+
+    Args:
+        checkpoint_id: The pivot checkpoint ID
+        window: Number of checkpoints to fetch on each side (default 5)
+    """
+    cps = _db.checkpoint_timeline(checkpoint_id, window=window)
+    if not cps:
+        return {"error": f"Checkpoint {checkpoint_id} not found"}
+    return {
+        "project": cps[0].project if cps else None,
+        "total": len(cps),
+        "timeline": [
+            {
+                "id": cp.id,
+                "timestamp": cp.timestamp.isoformat(),
+                "task": cp.current_task,
+                "status": cp.status,
+                "is_pivot": cp.id == checkpoint_id,
+            }
+            for cp in cps
+        ],
+        "tip": "Use memory_get(ids=[...]) for full details on any of these.",
+    }
+
+
+@mcp.tool()
+def memory_get(ids: list[str]) -> dict:
+    """Fetch full checkpoint details for a list of IDs.
+
+    Use this after memory_search() or memory_timeline() when you need the
+    complete state: all findings, dead ends, decisions, next steps.
+
+    Args:
+        ids: List of checkpoint IDs to retrieve
+    """
+    cps = _db.get_checkpoints_by_ids(ids)
+    return {
+        "count": len(cps),
+        "checkpoints": [
+            {
+                "id": cp.id,
+                "project": cp.project,
+                "timestamp": cp.timestamp.isoformat(),
+                "task": cp.current_task,
+                "goal": cp.goal,
+                "status": cp.status,
+                "context": cp.context,
+                "findings": cp.findings,
+                "dead_ends": cp.dead_ends,
+                "next_steps": cp.next_steps,
+                "open_questions": cp.open_questions,
+                "files_changed": cp.files_changed,
+                "decisions": [d.model_dump() for d in cp.decisions],
+                "agent": cp.agent,
+            }
+            for cp in cps
+        ],
+    }
+
+
+@mcp.tool()
+def remember(days: int = 14) -> dict:
+    """Auto-inject: compact briefing of all active projects for session start.
+
+    Call this at the beginning of every new session. Returns a ~200-400 token
+    summary of what's been going on — project statuses, current tasks, and
+    immediate next steps — so you never start cold.
+
+    Add to your .mcp.json 'onStart' to have it fire automatically.
+
+    Args:
+        days: How far back to look for active projects (default 14)
+    """
+    summaries = _db.recent_project_summaries(days=days)
+    if not summaries:
+        return {
+            "active_projects": 0,
+            "briefing": "No active projects in the last {} days. Use checkpoint() to start tracking work.".format(days),
+        }
+
+    lines = [f"## Active Projects ({len(summaries)} in last {days}d)\n"]
+    for s in summaries:
+        status_icon = {"in-progress": "◉", "blocked": "✗", "complete": "✓", "abandoned": "○"}.get(s["status"], "?")
+        lines.append(f"**{s['project']}** {status_icon} `{s['status']}`")
+        lines.append(f"  Goal: {s['goal']}")
+        lines.append(f"  Now: {s['task']}")
+        if s["next_step"]:
+            lines.append(f"  Next: {s['next_step']}")
+        if s["dead_ends"]:
+            lines.append(f"  Dead ends to avoid: {s['dead_ends']}")
+        lines.append(f"  ID: {s['checkpoint_id'][:8]}  Updated: {s['last_updated'][:10]}")
+        lines.append("")
+
+    lines.append("*Use `handoff(project)` for a full briefing on any project.*")
+    briefing = "\n".join(lines)
+
+    return {
+        "active_projects": len(summaries),
+        "token_estimate": len(briefing) // 4,
+        "briefing": briefing,
+        "projects": summaries,
     }
 
 
