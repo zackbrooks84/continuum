@@ -159,6 +159,12 @@ Or with uv (recommended):
 | `auto_observe_toggle(enabled, project)` | Enable/disable passive tool-call capture for this session |
 | `observe_status()` | Current observer state + pending observation counts |
 
+### Sync Files
+
+| Tool | Description |
+|------|-------------|
+| `sync_files(project, output_dir)` | Write MEMORY.md, DECISIONS.md, TASKS.md to a directory |
+
 ---
 
 ## CLI
@@ -194,6 +200,10 @@ continuum resume myproject               # full briefing
 continuum resume myproject --compact     # executive summary only
 continuum log                            # recent checkpoints
 continuum log --project myproject        # filter by project
+
+# Sync structured project files
+continuum sync myproject ./docs          # write MEMORY/DECISIONS/TASKS.md
+continuum sync myproject                 # use previously configured dir
 
 # Dashboard
 continuum status                         # daemon + queue + projects overview
@@ -336,6 +346,39 @@ continuum observe status
 - `rule` (default) — instant, no API, groups tool calls by type into findings
 - `claude` — calls Claude Haiku in a side-thread to write structured findings from your actual work. Set `ANTHROPIC_API_KEY` and use `--method claude`.
 
+### Auto-sync structured project files
+
+Every checkpoint and handoff automatically regenerates three git-friendly files in your project directory — no manual steps.
+
+```python
+# Configure once — all future checkpoints auto-sync to this dir
+sync_files("myapp", output_dir="./docs/project")
+
+# Now checkpoint normally — files update automatically
+checkpoint("myapp",
+    task="Fixed auth JWT rotation",
+    goal="Prep v2 release",
+    findings=["Token refresh now idempotent"],
+    next_steps=["Update docs", "Tag release"],
+)
+# → docs/project/MEMORY.md updated
+# → docs/project/DECISIONS.md updated
+# → docs/project/TASKS.md updated
+```
+
+```bash
+# CLI: one-time sync or configure
+continuum sync myapp ./docs/project     # sync now + save as default dir
+continuum sync myapp                    # sync to previously configured dir
+```
+
+**Files generated:**
+- `MEMORY.md` — goal, status, findings, open questions, files in play
+- `DECISIONS.md` — key decisions table + dead ends to avoid
+- `TASKS.md` — current task, next steps checklist, checkpoint history
+
+Git-friendly: stable format, diffs cleanly, safe to commit and track over time.
+
 ---
 
 ## Data
@@ -366,6 +409,7 @@ export CONTINUUM_DB=/path/to/custom.db
 - **Three-tier memory retrieval** — `memory_search` → `memory_timeline` → `memory_get`. Search first, expand only what you need. 95% token savings.
 - **Auto-inject on session start** — `remember()` gives you a sub-400 token briefing of all active projects. Never start cold again.
 - **Auto-observe** — one `auto_observe_toggle()` call and every tool call is passively captured. Background daemon compresses batches into checkpoints automatically. No manual `checkpoint()` required. Rule-based or Claude Haiku compression.
+- **Auto-sync structured files** — every checkpoint writes MEMORY.md, DECISIONS.md, TASKS.md to your project directory automatically. Git-friendly, diffs cleanly, human-readable.
 - **Dead end propagation** — things you explicitly mark as dead ends survive across sessions and show up in every future handoff. Agents don't repeat past mistakes.
 - **Resource-aware** — daemon checks available RAM before running each task. Skip if low, retry in 10s.
 - **Dependency chains** — `depends_on=<task_id>` for sequencing builds, tests, deploys.
@@ -383,7 +427,8 @@ continuum/
 ├── daemon.py       # Background process manager (task runner + observer thread)
 ├── observer.py     # Auto-observe: passive capture + rule/Claude compression
 ├── handoff.py      # Compact briefing generator
-├── mcp_server.py   # FastMCP server — all 19 tools in one place
+├── sync_files.py   # Auto-sync: render MEMORY/DECISIONS/TASKS.md
+├── mcp_server.py   # FastMCP server — all 20 tools in one place
 └── cli.py          # Click CLI
 ```
 

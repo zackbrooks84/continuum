@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff
+from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig
 
 DEFAULT_DIR = Path.home() / ".continuum"
 DEFAULT_DB  = DEFAULT_DIR / "continuum.db"
@@ -80,6 +80,11 @@ class DB:
                 context,
                 findings_text,
                 tokenize='porter ascii'
+            );
+
+            CREATE TABLE IF NOT EXISTS project_configs (
+                project TEXT PRIMARY KEY,
+                data    TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS observations (
@@ -354,6 +359,23 @@ class DB:
                 "checkpoint_id": cp.id,
             })
         return summaries
+
+    # ------------------------------------------------------------------
+    # Project configs (output dirs for sync_files, etc.)
+    # ------------------------------------------------------------------
+
+    def get_project_config(self, project: str) -> Optional[ProjectConfig]:
+        row = self._conn.execute(
+            "SELECT data FROM project_configs WHERE project=?", (project,)
+        ).fetchone()
+        return ProjectConfig.model_validate_json(row["data"]) if row else None
+
+    def save_project_config(self, config: ProjectConfig) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO project_configs(project, data) VALUES (?,?)",
+            (config.project, config.model_dump_json()),
+        )
+        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Observations (auto-observe)

@@ -85,8 +85,15 @@ class Checkpoint(BaseModel):
 
     git_ref: Optional[str] = None
     agent: Optional[str] = None
-    task_id: Optional[str] = None
+    task_id: Optional[str] = None           # forge task that produced this checkpoint
     tags: list[str] = Field(default_factory=list)
+
+
+class ProjectConfig(BaseModel):
+    """Per-project settings — primarily the output dir for synced files."""
+    project: str
+    output_dir: Optional[str] = None        # path to write MEMORY/DECISIONS/TASKS.md
+    auto_sync: bool = True                   # sync files automatically on checkpoint/handoff
 
 
 class Handoff(BaseModel):

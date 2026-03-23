@@ -30,6 +30,9 @@ Tools exposed:
     auto_observe_toggle — enable/disable passive tool-call capture for a project
     observe_status      — current observer state + observation stats
 
+  Sync Files (structured project knowledge):
+    sync_files          — write MEMORY.md / DECISIONS.md / TASKS.md to a directory
+
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
 
@@ -46,7 +49,8 @@ from typing import Any, Optional
 
 from fastmcp import FastMCP
 
-from .models import Task, TaskStatus, Checkpoint, Decision
+from pathlib import Path
+from .models import Task, TaskStatus, Checkpoint, Decision, ProjectConfig
 from .db import DB
 from .handoff import generate_handoff
 from .daemon import daemon_status
@@ -63,6 +67,22 @@ _db = DB()
 _auto_observe: bool = bool(os.environ.get("CONTINUUM_AUTO_OBSERVE"))
 _observe_project: Optional[str] = os.environ.get("CONTINUUM_OBSERVE_PROJECT")
 _observe_method: str = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
+
+
+def _maybe_sync(project: str) -> None:
+    """If a sync output dir is configured for this project, regenerate markdown files."""
+    try:
+        config = _db.get_project_config(project)
+        if not config or not config.auto_sync or not config.output_dir:
+            return
+        from .sync_files import sync_project_files
+        cp = _db.latest_checkpoint(project)
+        if not cp:
+            return
+        history = _db.list_checkpoints(project=project, limit=25)
+        sync_project_files(cp, history, Path(config.output_dir))
+    except Exception:
+        pass
 
 
 def _maybe_observe(tool_name: str, kwargs: dict, result: Any) -> None:
@@ -322,6 +342,7 @@ def checkpoint(
         "saved_at": cp.timestamp.isoformat(),
         "message": f"Checkpoint saved for '{project}'. Resume with: continuum resume {project}",
     }
+    _maybe_sync(project)
     _maybe_observe("checkpoint", {"project": project, "task": task, "status": status}, result)
     return result
 
@@ -366,6 +387,7 @@ def handoff(
         "immediate_action": h.immediate_action,
         "watch_out_for": h.watch_out_for,
     }
+    _maybe_sync(project)
     _maybe_observe("handoff", {"project": project}, result)
     return result
 
@@ -622,7 +644,7 @@ def remember(days: int = 14) -> dict:
 
     lines = [f"## Active Projects ({len(summaries)} in last {days}d)\n"]
     for s in summaries:
-        status_icon = {"in-progress": "\u25c9", "blocked": "\u2717", "complete": "\u2713", "abandoned": "\u25cb"}.get(s["status"], "?")
+        status_icon = {"in-progress": "◉", "blocked": "✗", "complete": "✓", "abandoned": "○"}.get(s["status"], "?")
         lines.append(f"**{s['project']}** {status_icon} `{s['status']}`")
         lines.append(f"  Goal: {s['goal']}")
         lines.append(f"  Now: {s['task']}")
@@ -714,6 +736,69 @@ def observe_status() -> dict:
             if not _auto_observe
             else f"Capturing tool calls for '{_observe_project}'. Daemon compresses every 20 observations."
         ),
+    }
+
+
+# ===========================================================================
+# Sync Files — write MEMORY.md / DECISIONS.md / TASKS.md to project dir
+# ===========================================================================
+
+@mcp.tool()
+def sync_files(
+    project: str,
+    output_dir: Optional[str] = None,
+    save_dir: bool = True,
+) -> dict:
+    """Write MEMORY.md, DECISIONS.md, TASKS.md for a project.
+
+    Generates three git-friendly markdown files from the project's latest
+    checkpoint and history. Files are stable-formatted for version control —
+    diffable, human-readable, never need manual editing.
+
+    If output_dir is provided (and save_dir=True), it's saved as the
+    configured directory for this project so future checkpoint() and handoff()
+    calls sync automatically.
+
+    If output_dir is omitted, uses the previously configured dir, or falls
+    back to ~/.continuum/projects/{project}/.
+
+    Args:
+        project: Project identifier
+        output_dir: Path to write files (saves as project default if save_dir=True)
+        save_dir: Persist output_dir as the project's configured sync target
+    """
+    from .sync_files import sync_project_files
+    from .models import ProjectConfig
+
+    cp = _db.latest_checkpoint(project)
+    if not cp:
+        return {"error": f"No checkpoints found for project '{project}'"}
+
+    # Resolve output directory
+    config = _db.get_project_config(project)
+    if output_dir:
+        out_path = Path(output_dir).expanduser()
+        if save_dir:
+            new_config = ProjectConfig(
+                project=project,
+                output_dir=str(out_path),
+                auto_sync=config.auto_sync if config else True,
+            )
+            _db.save_project_config(new_config)
+    elif config and config.output_dir:
+        out_path = Path(config.output_dir)
+    else:
+        out_path = Path.home() / ".continuum" / "projects" / project
+
+    history = _db.list_checkpoints(project=project, limit=25)
+    written = sync_project_files(cp, history, out_path)
+
+    return {
+        "project": project,
+        "output_dir": str(out_path),
+        "files_written": [str(p) for p in written.values()],
+        "checkpoint_id": cp.id[:8],
+        "tip": f"Files auto-update on every checkpoint() and handoff() for '{project}'.",
     }
 
 

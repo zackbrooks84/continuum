@@ -48,17 +48,17 @@ def setup():
     """Create ~/.continuum dirs and start the daemon."""
     continuum_dir = Path.home() / ".continuum"
     (continuum_dir / "logs").mkdir(parents=True, exist_ok=True)
-    console.print(f"[green]\u2713[/] Created {continuum_dir}")
+    console.print(f"[green]✓[/] Created {continuum_dir}")
 
     db = _db()
-    console.print(f"[green]\u2713[/] Database ready: {db.db_path}")
+    console.print(f"[green]✓[/] Database ready: {db.db_path}")
 
     from .daemon import daemon_status, start_daemon
     s = daemon_status()
     if s["running"]:
-        console.print(f"[yellow]\u26a1[/] Daemon already running (pid {s['pid']})")
+        console.print(f"[yellow]⚡[/] Daemon already running (pid {s['pid']})")
     else:
-        console.print("[green]\u2713[/] Starting daemon...")
+        console.print("[green]✓[/] Starting daemon...")
         import subprocess, sys
         subprocess.Popen(
             [sys.executable, "-m", "continuum.daemon_entry"],
@@ -66,7 +66,7 @@ def setup():
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        console.print("[green]\u2713[/] Daemon started in background")
+        console.print("[green]✓[/] Daemon started in background")
 
     console.print("\n[bold]Continuum is ready.[/] Try:")
     console.print("  continuum push 'echo hello'")
@@ -117,9 +117,9 @@ def push(command, name, project, auto_checkpoint, auto_observe, priority, cwd, t
         from datetime import datetime, timezone
         ok, reason = check_resources(task.min_free_ram_mb)
         if not ok:
-            console.print(f"[red]\u2717[/] Insufficient resources: {reason}")
+            console.print(f"[red]✗[/] Insufficient resources: {reason}")
             sys.exit(1)
-        console.print(f"[yellow]\u26a1[/] Running now: {command}")
+        console.print(f"[yellow]⚡[/] Running now: {command}")
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.now(timezone.utc)
         db.push_task(task)
@@ -131,13 +131,13 @@ def push(command, name, project, auto_checkpoint, auto_observe, priority, cwd, t
         db.update_task(task)
         db.save_result(result)
         _auto_cp(task, result)
-        icon = "[green]\u2713[/]" if result.success else "[red]\u2717[/]"
+        icon = "[green]✓[/]" if result.success else "[red]✗[/]"
         console.print(f"{icon} Exit {result.exit_code} in {result.duration_seconds:.1f}s")
         if result.stdout:
             console.print(result.stdout[-2000:])
     else:
         db.push_task(task)
-        console.print(f"[green]\u2713[/] Queued task [bold]{task.id}[/]: {task_name}")
+        console.print(f"[green]✓[/] Queued task [bold]{task.id}[/]: {task_name}")
         if project and auto_checkpoint:
             console.print(f"  Will checkpoint to project [cyan]{project}[/] on completion")
         if auto_observe and project:
@@ -174,9 +174,9 @@ def daemon_status_cmd():
     from .daemon import daemon_status
     s = daemon_status()
     if s["running"]:
-        console.print(f"[green]\u25cf Daemon running[/] (pid {s['pid']})")
+        console.print(f"[green]● Daemon running[/] (pid {s['pid']})")
     else:
-        console.print("[dim]\u25cb Daemon not running[/]")
+        console.print("[dim]○ Daemon not running[/]")
         console.print("  Start with: continuum daemon start")
 
 
@@ -228,9 +228,9 @@ def result(task_id):
         if not task:
             console.print(f"[red]Task {task_id} not found[/]")
             sys.exit(1)
-        console.print(f"[yellow]Task {task_id} is {task.status.value} \u2014 no result yet[/]")
+        console.print(f"[yellow]Task {task_id} is {task.status.value} — no result yet[/]")
         return
-    icon = "[green]\u2713[/]" if r.success else "[red]\u2717[/]"
+    icon = "[green]✓[/]" if r.success else "[red]✗[/]"
     console.print(f"{icon} Exit {r.exit_code} | {r.duration_seconds:.1f}s | {r.finished_at.strftime('%Y-%m-%d %H:%M')}")
     if r.stdout:
         console.print(Panel(r.stdout[-3000:], title="stdout", border_style="dim"))
@@ -245,9 +245,9 @@ def cancel(task_id):
     db = _db()
     ok = db.cancel_task(task_id)
     if ok:
-        console.print(f"[green]\u2713[/] Cancelled {task_id}")
+        console.print(f"[green]✓[/] Cancelled {task_id}")
     else:
-        console.print(f"[red]\u2717[/] Could not cancel {task_id} (not pending?)")
+        console.print(f"[red]✗[/] Could not cancel {task_id} (not pending?)")
 
 
 # ===========================================================================
@@ -276,7 +276,7 @@ def cp(project, task, goal, status, context, finding, dead_end, next, question, 
         --task "Refactoring auth module" \\
         --goal "Make auth testable without DB" \\
         --finding "JWT decode is tightly coupled to User model" \\
-        --dead-end "Tried mock patching \u2014 breaks 12 tests" \\
+        --dead-end "Tried mock patching — breaks 12 tests" \\
         --next "Extract UserResolver interface" \\
         --next "Inject resolver in JWTMiddleware"
     """
@@ -296,7 +296,7 @@ def cp(project, task, goal, status, context, finding, dead_end, next, question, 
         agent=agent,
     )
     db.save_checkpoint(checkpoint)
-    console.print(f"[green]\u2713[/] Checkpoint saved: [cyan]{checkpoint.id[:8]}[/] for project [bold]{project}[/]")
+    console.print(f"[green]✓[/] Checkpoint saved: [cyan]{checkpoint.id[:8]}[/] for project [bold]{project}[/]")
     console.print(f"  Resume: [dim]continuum resume {project}[/]")
 
 
@@ -332,16 +332,16 @@ def resume(project, checkpoint_id, compact):
     db.save_handoff(h)
 
     if compact:
-        console.print(Panel(h.executive_summary, title=f"[bold]{project}[/] \u2014 resume briefing", border_style="cyan"))
+        console.print(Panel(h.executive_summary, title=f"[bold]{project}[/] — resume briefing", border_style="cyan"))
         console.print(f"\n[bold]First action:[/] {h.immediate_action}")
         if h.watch_out_for:
             console.print("\n[bold]Watch out for:[/]")
             for w in h.watch_out_for:
-                console.print(f"  [red]\u2717[/] {w}")
+                console.print(f"  [red]✗[/] {w}")
     else:
         console.print(Panel(
             h.full_context,
-            title=f"[bold]{project}[/] \u2014 resume briefing (~{h.token_estimate} tokens)",
+            title=f"[bold]{project}[/] — resume briefing (~{h.token_estimate} tokens)",
             border_style="cyan",
         ))
 
@@ -388,7 +388,7 @@ def status():
 
     # Daemon
     ds = _ds()
-    daemon_str = "[green]\u25cf running[/]" if ds["running"] else "[dim]\u25cb stopped[/]"
+    daemon_str = "[green]● running[/]" if ds["running"] else "[dim]○ stopped[/]"
     if ds.get("pid"):
         daemon_str += f" (pid {ds['pid']})"
 
@@ -470,7 +470,7 @@ def observe_on(project, method, compress_every):
     os.environ["CONTINUUM_AUTO_OBSERVE"] = "1"
     os.environ["CONTINUUM_OBSERVE_PROJECT"] = project
     os.environ["CONTINUUM_OBSERVE_METHOD"] = method
-    console.print(f"[green]\u2713[/] Auto-observe [green]enabled[/] for project [cyan]{project}[/]")
+    console.print(f"[green]✓[/] Auto-observe [green]enabled[/] for project [cyan]{project}[/]")
     console.print(f"  Method: {method}  |  Compress every: {compress_every} observations")
     console.print(f"  Tip: export CONTINUUM_AUTO_OBSERVE=1 CONTINUUM_OBSERVE_PROJECT={project}")
 
@@ -481,7 +481,7 @@ def observe_off():
     import os
     os.environ.pop("CONTINUUM_AUTO_OBSERVE", None)
     os.environ.pop("CONTINUUM_OBSERVE_PROJECT", None)
-    console.print("[dim]\u25cb Auto-observe disabled[/]")
+    console.print("[dim]○ Auto-observe disabled[/]")
 
 
 @observe.command("status")
@@ -496,6 +496,58 @@ def observe_status_cmd(project):
         ps = db.observation_stats(project)
         console.print(f"  [cyan]{project}[/]  total: {ps['total']}  pending: {ps['pending']}")
     console.print()
+
+
+# ===========================================================================
+# Sync
+# ===========================================================================
+
+@cli.command()
+@click.argument("project")
+@click.argument("output_dir", required=False, default=None)
+@click.option("--no-save", is_flag=True, help="Don't persist output_dir as project default")
+def sync(project, output_dir, no_save):
+    """Write MEMORY.md, DECISIONS.md, TASKS.md for PROJECT.
+
+    \b
+    Examples:
+      continuum sync myapp ./docs
+      continuum sync myapp          # uses previously configured dir
+    """
+    from pathlib import Path as _Path
+    from .sync_files import sync_project_files
+    from .models import ProjectConfig
+
+    db = _db()
+    cp = db.latest_checkpoint(project)
+    if not cp:
+        console.print(f"[red]✗[/] No checkpoints found for project '{project}'")
+        sys.exit(1)
+
+    config = db.get_project_config(project)
+
+    if output_dir:
+        out_path = _Path(output_dir).expanduser().resolve()
+        if not no_save:
+            new_config = ProjectConfig(
+                project=project,
+                output_dir=str(out_path),
+                auto_sync=config.auto_sync if config else True,
+            )
+            db.save_project_config(new_config)
+    elif config and config.output_dir:
+        out_path = _Path(config.output_dir)
+    else:
+        out_path = _Path.home() / ".continuum" / "projects" / project
+
+    history = db.list_checkpoints(project=project, limit=25)
+    written = sync_project_files(cp, history, out_path)
+
+    console.print(f"[green]✓[/] Synced [cyan]{project}[/] → {out_path}")
+    for filename, path in written.items():
+        console.print(f"  [dim]{filename}[/]  {path}")
+    if not no_save and output_dir:
+        console.print(f"  Saved as default for future auto-sync")
 
 
 if __name__ == "__main__":
