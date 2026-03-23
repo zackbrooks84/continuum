@@ -1,8 +1,9 @@
-"""Single SQLite database for all Continuum state — tasks, results, checkpoints, handoffs."""
+"""Single SQLite database for all Continuum state — tasks, results, checkpoints, handoffs, observations."""
 from __future__ import annotations
 
-import json
 import sqlite3
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -80,6 +81,17 @@ class DB:
                 findings_text,
                 tokenize='porter ascii'
             );
+
+            CREATE TABLE IF NOT EXISTS observations (
+                id         TEXT PRIMARY KEY,
+                project    TEXT NOT NULL,
+                tool_name  TEXT NOT NULL,
+                summary    TEXT NOT NULL,
+                timestamp  TEXT NOT NULL,
+                compressed INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_obs_project_comp
+                ON observations(project, compressed, timestamp);
         """)
         self._conn.commit()
 
@@ -342,6 +354,62 @@ class DB:
                 "checkpoint_id": cp.id,
             })
         return summaries
+
+    # ------------------------------------------------------------------
+    # Observations (auto-observe)
+    # ------------------------------------------------------------------
+
+    def save_observation(self, project: str, tool_name: str, summary: str) -> str:
+        obs_id = str(uuid.uuid4())[:8]
+        ts = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT INTO observations(id, project, tool_name, summary, timestamp, compressed)"
+            " VALUES (?,?,?,?,?,0)",
+            (obs_id, project, tool_name, summary, ts),
+        )
+        self._conn.commit()
+        return obs_id
+
+    def get_uncompressed_observations(self, project: str, limit: int = 100) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, tool_name, summary, timestamp FROM observations"
+            " WHERE project=? AND compressed=0 ORDER BY timestamp ASC LIMIT ?",
+            (project, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def projects_needing_compression(self, threshold: int) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT project, COUNT(*) as n FROM observations WHERE compressed=0"
+            " GROUP BY project HAVING n >= ?",
+            (threshold,),
+        ).fetchall()
+        return [r["project"] for r in rows]
+
+    def mark_observations_compressed(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        self._conn.execute(
+            f"UPDATE observations SET compressed=1 WHERE id IN ({placeholders})", ids
+        )
+        self._conn.commit()
+
+    def observation_stats(self, project: Optional[str] = None) -> dict:
+        if project:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as total,"
+                " SUM(CASE WHEN compressed=0 THEN 1 ELSE 0 END) as pending"
+                " FROM observations WHERE project=?",
+                (project,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COUNT(*) as total,"
+                " SUM(CASE WHEN compressed=0 THEN 1 ELSE 0 END) as pending"
+                " FROM observations",
+            ).fetchone()
+        return {"total": row["total"] or 0, "pending": row["pending"] or 0}
 
     def close(self) -> None:
         self._conn.close()

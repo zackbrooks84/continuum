@@ -28,18 +28,26 @@ def start_daemon(workers: int = 2) -> None:
 
     from .db import DB
     from .runner import ContinuumRunner
+    from .observer import ObserverThread
 
     db = DB()
     runner = ContinuumRunner(db, workers=workers)
     runner.start()
 
+    # Auto-observe: compress method from env, default rule-based
+    observe_method = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
+    observer = ObserverThread(db, compress_every=20, method=observe_method)
+    observer.start()
+
     print(f"Continuum daemon started (pid {os.getpid()}, {workers} workers)")
     print(f"DB:   {db.db_path}")
     print(f"Logs: {CONTINUUM_DIR / 'logs'}")
+    print(f"Observer: compression method={observe_method}")
 
     def _shutdown(sig, frame):
         print("\nShutting down continuum daemon...")
         runner.stop()
+        observer.stop()
         PID_FILE.unlink(missing_ok=True)
         sys.exit(0)
 

@@ -24,18 +24,25 @@ Tools exposed:
     memory_search       — FTS search, returns compact ID + summary list
     memory_timeline     — chronological context slice around a checkpoint
     memory_get          — full details for specific IDs
-    remember            — auto-inject briefing for session start
+    remember            — auto-inject briefing for session start (~300 tokens)
+
+  Auto-observe (passive capture):
+    auto_observe_toggle — enable/disable passive tool-call capture for a project
+    observe_status      — current observer state + observation stats
 
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
+
+Environment variables:
+    CONTINUUM_AUTO_OBSERVE=1        enable auto-observe globally
+    CONTINUUM_OBSERVE_PROJECT=name  default project for observations
+    CONTINUUM_OBSERVE_METHOD=claude use Claude Haiku to compress (needs ANTHROPIC_API_KEY)
 """
 from __future__ import annotations
 
 import os
-import subprocess
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastmcp import FastMCP
 
@@ -44,9 +51,32 @@ from .db import DB
 from .handoff import generate_handoff
 from .daemon import daemon_status
 from .runner import run_task, check_resources
+from .observer import summarize_call
 
 mcp = FastMCP("continuum", "0.1.0")
 _db = DB()
+
+# ---------------------------------------------------------------------------
+# Session-level auto-observe state
+# Seeded from env vars; toggled at runtime via auto_observe_toggle()
+# ---------------------------------------------------------------------------
+_auto_observe: bool = bool(os.environ.get("CONTINUUM_AUTO_OBSERVE"))
+_observe_project: Optional[str] = os.environ.get("CONTINUUM_OBSERVE_PROJECT")
+_observe_method: str = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
+
+
+def _maybe_observe(tool_name: str, kwargs: dict, result: Any) -> None:
+    """If auto-observe is active, quietly record a semantic summary of this tool call."""
+    if not _auto_observe:
+        return
+    proj = kwargs.get("project") or _observe_project
+    if not proj:
+        return
+    try:
+        summary = summarize_call(tool_name, kwargs, result)
+        _db.save_observation(proj, tool_name, summary)
+    except Exception:
+        pass
 
 
 # ===========================================================================
@@ -97,13 +127,15 @@ def forge_push(
         tags=tags or [],
     )
     _db.push_task(task)
-    return {
+    result = {
         "task_id": task.id,
         "name": task.name,
         "status": task.status.value,
         "auto_checkpoint": task.auto_checkpoint,
         "tip": "Start the daemon with: continuum daemon start",
     }
+    _maybe_observe("forge_push", {"name": name, "command": command, "project": project}, result)
+    return result
 
 
 @mcp.tool()
@@ -284,12 +316,14 @@ def checkpoint(
         agent=agent,
     )
     _db.save_checkpoint(cp)
-    return {
+    result = {
         "checkpoint_id": cp.id,
         "project": cp.project,
         "saved_at": cp.timestamp.isoformat(),
         "message": f"Checkpoint saved for '{project}'. Resume with: continuum resume {project}",
     }
+    _maybe_observe("checkpoint", {"project": project, "task": task, "status": status}, result)
+    return result
 
 
 @mcp.tool()
@@ -323,7 +357,7 @@ def handoff(
     if save:
         _db.save_handoff(h)
 
-    return {
+    result = {
         "handoff_id": h.id,
         "checkpoint_id": h.checkpoint_id,
         "token_estimate": h.token_estimate,
@@ -332,6 +366,8 @@ def handoff(
         "immediate_action": h.immediate_action,
         "watch_out_for": h.watch_out_for,
     }
+    _maybe_observe("handoff", {"project": project}, result)
+    return result
 
 
 @mcp.tool()
@@ -461,12 +497,14 @@ def push_and_checkpoint(
     )
     _db.push_task(task)
 
-    return {
+    result = {
         "task_id": task.id,
         "checkpoint_id": cp.id,
         "project": project,
         "message": f"Task queued and checkpoint saved. Resume with: continuum resume {project}",
     }
+    _maybe_observe("push_and_checkpoint", {"name": name, "project": project, "goal": goal}, result)
+    return result
 
 
 # ===========================================================================
@@ -486,12 +524,14 @@ def memory_search(query: str, limit: int = 10) -> dict:
         limit: Max results to return
     """
     results = _db.search_checkpoints(query, limit=limit)
-    return {
+    result = {
         "query": query,
         "count": len(results),
         "matches": results,
         "tip": "Use memory_get(ids=[...]) to fetch full details for specific checkpoints.",
     }
+    _maybe_observe("memory_search", {"query": query}, result)
+    return result
 
 
 @mcp.tool()
@@ -582,7 +622,7 @@ def remember(days: int = 14) -> dict:
 
     lines = [f"## Active Projects ({len(summaries)} in last {days}d)\n"]
     for s in summaries:
-        status_icon = {"in-progress": "◉", "blocked": "✗", "complete": "✓", "abandoned": "○"}.get(s["status"], "?")
+        status_icon = {"in-progress": "\u25c9", "blocked": "\u2717", "complete": "\u2713", "abandoned": "\u25cb"}.get(s["status"], "?")
         lines.append(f"**{s['project']}** {status_icon} `{s['status']}`")
         lines.append(f"  Goal: {s['goal']}")
         lines.append(f"  Now: {s['task']}")
@@ -601,6 +641,79 @@ def remember(days: int = 14) -> dict:
         "token_estimate": len(briefing) // 4,
         "briefing": briefing,
         "projects": summaries,
+    }
+
+
+# ===========================================================================
+# Auto-observe — passive tool-call capture
+# ===========================================================================
+
+@mcp.tool()
+def auto_observe_toggle(
+    enabled: bool,
+    project: Optional[str] = None,
+    method: str = "rule",
+    compress_every: int = 20,
+) -> dict:
+    """Enable or disable passive auto-observe for this session.
+
+    When enabled, every tool call is quietly summarized and stored as an
+    observation. The daemon compressor thread rolls these into checkpoints
+    automatically — no manual checkpoint() calls required.
+
+    Compression methods:
+      rule   — fast, no API, groups tool calls by type (default)
+      claude — calls Claude Haiku to write structured findings
+               (requires ANTHROPIC_API_KEY environment variable)
+
+    Args:
+        enabled: Turn auto-observe on or off
+        project: Project to attribute observations to (required when enabling)
+        method: "rule" or "claude"
+        compress_every: Compress into a checkpoint after this many observations
+    """
+    global _auto_observe, _observe_project, _observe_method
+    _auto_observe = enabled
+    if project:
+        _observe_project = project
+    _observe_method = method
+
+    return {
+        "auto_observe": _auto_observe,
+        "observe_project": _observe_project,
+        "method": _observe_method,
+        "compress_every": compress_every,
+        "message": (
+            f"Auto-observe {'enabled' if enabled else 'disabled'}"
+            + (f" for project '{_observe_project}'" if _observe_project else "")
+            + f" (method={method}, compress every {compress_every} observations)"
+        ),
+    }
+
+
+@mcp.tool()
+def observe_status() -> dict:
+    """Check current auto-observe state and observation counts.
+
+    Returns the session's observe config and DB stats so you can see
+    how many observations are pending compression.
+    """
+    all_stats = _db.observation_stats()
+    proj_stats = _db.observation_stats(_observe_project) if _observe_project else None
+
+    return {
+        "auto_observe": _auto_observe,
+        "observe_project": _observe_project,
+        "method": _observe_method,
+        "stats": {
+            "global": all_stats,
+            "current_project": proj_stats,
+        },
+        "tip": (
+            "Use auto_observe_toggle(enabled=True, project='myproject') to start."
+            if not _auto_observe
+            else f"Capturing tool calls for '{_observe_project}'. Daemon compresses every 20 observations."
+        ),
     }
 
 

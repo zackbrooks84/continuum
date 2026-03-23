@@ -152,6 +152,13 @@ Or with uv (recommended):
 | `memory_get(ids)` | Full details for specific checkpoint IDs |
 | `remember()` | **Auto-inject** — compact briefing of all active projects for session start |
 
+### Auto-Observe
+
+| Tool | Description |
+|------|-------------|
+| `auto_observe_toggle(enabled, project)` | Enable/disable passive tool-call capture for this session |
+| `observe_status()` | Current observer state + pending observation counts |
+
 ---
 
 ## CLI
@@ -289,6 +296,46 @@ memory_get(ids=["a1b2c3d4", "e5f6g7h8"])
 
 This is 95% token savings vs. loading full context blindly. The agent retrieves exactly what it needs, when it needs it.
 
+### Auto-observe: zero-effort capture
+
+No more manual `checkpoint()` calls. Turn on auto-observe once and every tool call is quietly recorded, then compressed into checkpoints automatically.
+
+```python
+# Turn it on once at session start
+auto_observe_toggle(enabled=True, project="myapp")
+
+# Now just work normally — every tool call gets captured
+forge_push("pytest tests/", project="myapp")
+memory_search("auth failure")
+handoff("myapp")
+# → All silently recorded as observations
+
+# The daemon compresses every 20 observations into a structured checkpoint
+# Next session: remember() or handoff("myapp") shows everything
+```
+
+```bash
+# CLI: enable for a project
+continuum observe on myapp
+
+# With Claude Haiku compression (needs ANTHROPIC_API_KEY)
+continuum observe on myapp --method claude
+
+# Global toggle via env var
+export CONTINUUM_AUTO_OBSERVE=1
+export CONTINUUM_OBSERVE_PROJECT=myapp
+
+# Push a task with auto-observe
+continuum push 'pytest tests/' --project myapp --auto-observe
+
+# Check observation stats
+continuum observe status
+```
+
+**Compression methods:**
+- `rule` (default) — instant, no API, groups tool calls by type into findings
+- `claude` — calls Claude Haiku in a side-thread to write structured findings from your actual work. Set `ANTHROPIC_API_KEY` and use `--method claude`.
+
 ---
 
 ## Data
@@ -318,6 +365,7 @@ export CONTINUUM_DB=/path/to/custom.db
 - **<1k token handoffs** — the resume briefing is designed to be loaded cold. Typically 400-800 tokens. Not a log dump.
 - **Three-tier memory retrieval** — `memory_search` → `memory_timeline` → `memory_get`. Search first, expand only what you need. 95% token savings.
 - **Auto-inject on session start** — `remember()` gives you a sub-400 token briefing of all active projects. Never start cold again.
+- **Auto-observe** — one `auto_observe_toggle()` call and every tool call is passively captured. Background daemon compresses batches into checkpoints automatically. No manual `checkpoint()` required. Rule-based or Claude Haiku compression.
 - **Dead end propagation** — things you explicitly mark as dead ends survive across sessions and show up in every future handoff. Agents don't repeat past mistakes.
 - **Resource-aware** — daemon checks available RAM before running each task. Skip if low, retry in 10s.
 - **Dependency chains** — `depends_on=<task_id>` for sequencing builds, tests, deploys.
@@ -330,11 +378,12 @@ export CONTINUUM_DB=/path/to/custom.db
 ```
 continuum/
 ├── models.py       # Task, TaskResult, Checkpoint, Decision, Handoff (Pydantic)
-├── db.py           # Single SQLite store + FTS5 memory search
+├── db.py           # Single SQLite store + FTS5 memory search + observations
 ├── runner.py       # Task executor + auto-checkpoint integration
-├── daemon.py       # Background process manager
+├── daemon.py       # Background process manager (task runner + observer thread)
+├── observer.py     # Auto-observe: passive capture + rule/Claude compression
 ├── handoff.py      # Compact briefing generator
-├── mcp_server.py   # FastMCP server — all tools in one place
+├── mcp_server.py   # FastMCP server — all 19 tools in one place
 └── cli.py          # Click CLI
 ```
 
