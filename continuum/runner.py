@@ -107,6 +107,36 @@ def auto_checkpoint(task: Task, result: TaskResult) -> None:
         pass
 
 
+def _fire_notify(db, task: Task, result: TaskResult) -> None:
+    """Fire task-complete notifications.  Checks per-task config first,
+    then falls back to per-project config, then environment variables."""
+    try:
+        from .notify import NotifyConfig, notify, format_task_complete
+        import json
+
+        config_json = db.pop_task_notify(task.id)
+        if config_json is None and task.project:
+            config_json = db.get_notify_config(task.project)
+
+        if config_json:
+            raw = json.loads(config_json)
+            cfg = NotifyConfig(**raw)
+        else:
+            cfg = NotifyConfig.from_env()
+
+        if not cfg.has_any_channel():
+            return
+        if cfg.errors_only and result.success:
+            return
+
+        summary_lines = [l for l in result.stdout.splitlines() if l.strip()]
+        summary = "\n".join(summary_lines[:5]) or (result.stderr[:200] if result.stderr else "No output.")
+        title, msg = format_task_complete(task.id, task.project or "?", summary, result.success)
+        notify(title, msg, config=cfg, extra={"task_id": task.id, "exit_code": result.exit_code})
+    except Exception:
+        pass
+
+
 class ContinuumRunner:
     """Background thread pool — pulls from queue, executes, auto-checkpoints."""
 
@@ -157,6 +187,9 @@ class ContinuumRunner:
 
             # Auto-checkpoint if requested
             auto_checkpoint(task, result)
+
+            # Notifications — fire any per-task or per-project notify config
+            _fire_notify(self.db, task, result)
 
             if self.on_complete:
                 try:
