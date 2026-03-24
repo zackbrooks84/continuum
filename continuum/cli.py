@@ -560,5 +560,31 @@ def sync(project, output_dir, no_save):
         console.print(f"  Saved as default for future auto-sync")
 
 
+# ===========================================================================
+# Web UI
+# ===========================================================================
+
+@cli.command()
+@click.option("--port", default=8765, show_default=True, help="Port to serve on")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind to")
+@click.option("--no-browser", is_flag=True, help="Don't open browser automatically")
+def ui(port, host, no_browser):
+    """Start the local web UI (dashboard, tasks, timeline).
+
+    \b
+    Opens http://localhost:8765 in your browser automatically.
+    Requires: pip install continuum[ui]
+    """
+    try:
+        from .ui.server import serve
+    except ImportError:
+        console.print("[red]UI dependencies not installed.[/]")
+        console.print("Run: [bold]pip install continuum[ui][/]")
+        raise SystemExit(1)
+    console.print(f"[green]✓[/] Starting Continuum UI on [cyan]http://{host}:{port}[/]")
+    console.print("  Press [bold]Ctrl+C[/] to stop.")
+    serve(host=host, port=port, open_browser=not no_browser)
+
+
 if __name__ == "__main__":
     cli()

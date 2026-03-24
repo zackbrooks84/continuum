@@ -254,12 +254,17 @@ def forge_push(
     timeout: Optional[int] = None,
     min_free_ram_mb: int = 256,
     tags: Optional[list[str]] = None,
+    dry_run: bool = False,
 ) -> dict:
     """[COMMON] Push a shell command onto the Continuum task queue.
 
     The daemon picks it up and runs it offline — you can close your session.
     Set auto_checkpoint=True with a project name to automatically save a
     structured checkpoint when the task completes.
+
+    Safety: set dry_run=True to preview what would be queued without actually
+    running anything. Set CONTINUUM_SAFE_MODE=confirm in your environment to
+    require forge_approve() before any task executes.
 
     Args:
         name: Human-readable task name
@@ -272,7 +277,32 @@ def forge_push(
         timeout: Max seconds to run (None = unlimited)
         min_free_ram_mb: Skip task if insufficient RAM (default 256)
         tags: Optional labels for filtering
+        dry_run: If True, preview the task without queuing it
     """
+    import os
+    safe_mode = os.environ.get("CONTINUUM_SAFE_MODE", "").lower()
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_queue": {
+                "name": name,
+                "command": command,
+                "cwd": cwd or str(Path.home()),
+                "project": project,
+                "auto_checkpoint": auto_checkpoint,
+                "priority": priority,
+                "depends_on": depends_on,
+            },
+            "message": "Dry run — nothing queued. Remove dry_run=True to execute.",
+        }
+
+    # Determine initial status based on safe mode
+    from .models import TaskStatus
+    initial_status = TaskStatus.PENDING
+    if safe_mode == "confirm":
+        initial_status = TaskStatus("pending_confirm") if hasattr(TaskStatus, "PENDING_CONFIRM") else TaskStatus.PENDING
+
     task = Task(
         name=name,
         command=command,
@@ -285,14 +315,30 @@ def forge_push(
         min_free_ram_mb=min_free_ram_mb,
         tags=tags or [],
     )
-    _db.push_task(task)
-    result = {
-        "task_id": task.id,
-        "name": task.name,
-        "status": task.status.value,
-        "auto_checkpoint": task.auto_checkpoint,
-        "tip": "Start the daemon with: continuum daemon start",
-    }
+
+    # Override status for confirm mode
+    if safe_mode == "confirm":
+        task.status = TaskStatus.WAITING  # daemon skips WAITING unless unblocked
+        _db.push_task(task)
+        result = {
+            "task_id": task.id,
+            "name": task.name,
+            "status": "pending_confirm",
+            "safe_mode": "confirm",
+            "message": "Task queued but WILL NOT RUN until approved.",
+            "approve_with": f"forge_approve(task_id='{task.id}')",
+            "ui_approve": f"http://localhost:8765/tasks/{task.id}/approve",
+        }
+    else:
+        _db.push_task(task)
+        result = {
+            "task_id": task.id,
+            "name": task.name,
+            "status": task.status.value,
+            "auto_checkpoint": task.auto_checkpoint,
+            "tip": "Start the daemon with: continuum daemon start",
+        }
+
     _maybe_observe("forge_push", {"name": name, "command": command, "project": project}, result)
     return result
 
@@ -368,6 +414,77 @@ def forge_cancel(task_id: str) -> dict:
     """
     ok = _db.cancel_task(task_id)
     return {"cancelled": ok, "task_id": task_id}
+
+
+@mcp.tool()
+def forge_approve(task_id: str) -> dict:
+    """[COMMON] Approve a task that was queued in safe-mode confirm.
+
+    When CONTINUUM_SAFE_MODE=confirm is set, forge_push() queues tasks in
+    a 'waiting' state. Call forge_approve() to release the task so the
+    daemon will actually run it.
+
+    Also available in the web UI: http://localhost:8765/tasks/{task_id}/approve
+
+    Args:
+        task_id: Task ID to approve
+    """
+    task = _db.get_task(task_id)
+    if not task:
+        return {"error": f"Task {task_id} not found"}
+    if task.status not in (TaskStatus.PENDING, TaskStatus.WAITING):
+        return {"error": f"Task is already {task.status.value}"}
+    task.status = TaskStatus.PENDING
+    _db.update_task(task)
+    return {
+        "approved": True,
+        "task_id": task_id,
+        "name": task.name,
+        "message": "Task is now queued. The daemon will pick it up on the next cycle.",
+    }
+
+
+@mcp.tool()
+def safe_mode(level: str = "off", project: Optional[str] = None) -> dict:
+    """[COMMON] Set the safety level for task execution — controls what runs automatically.
+
+    Levels:
+      "off"     — default; tasks run immediately when queued (no friction)
+      "preview" — forge_push() always acts as dry_run; nothing queues without explicit confirm
+      "confirm" — tasks queue as waiting; require forge_approve() before daemon runs them
+      "sandbox" — tasks queue as waiting AND command is shown for review before approval
+
+    The level is set via CONTINUUM_SAFE_MODE env var for the current session.
+    This tool sets it for the current process only; export the var for persistence.
+
+    Web UI shows approve buttons for all waiting tasks: http://localhost:8765/tasks
+
+    Args:
+        level: "off" | "preview" | "confirm" | "sandbox"
+        project: Optional project scope (future: per-project configs)
+    """
+    import os
+    valid = {"off", "preview", "confirm", "sandbox"}
+    if level not in valid:
+        return {"error": f"Invalid level '{level}'. Choose from: {', '.join(sorted(valid))}"}
+
+    os.environ["CONTINUUM_SAFE_MODE"] = "" if level == "off" else level
+
+    descriptions = {
+        "off":     "Tasks run immediately. No confirmation needed.",
+        "preview": "forge_push() shows a preview — use dry_run=False to actually queue.",
+        "confirm": "Tasks queue as waiting. Call forge_approve(task_id) to run.",
+        "sandbox": "Tasks queue as waiting AND command is shown for review.",
+    }
+
+    return {
+        "safe_mode": level,
+        "project": project,
+        "description": descriptions[level],
+        "env_var": f"CONTINUUM_SAFE_MODE={level}",
+        "tip": "Export CONTINUUM_SAFE_MODE in your shell profile to make this permanent.",
+        "ui": "http://localhost:8765/tasks — approve waiting tasks in the browser",
+    }
 
 
 @mcp.tool()
@@ -1630,6 +1747,7 @@ def dispatch_claude(
         depends_on: Task ID that must complete before this dispatches
     """
     task_name = name or f"claude: {prompt[:55]}"
+
     # Escape the prompt for shell safety using single-quote wrapping
     safe_prompt = prompt.replace("'", "'\\''")
     command = f"claude --print -p '{safe_prompt}'"
