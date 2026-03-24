@@ -8,6 +8,18 @@ Built for Claude Code + MCP. No cloud. No accounts. Just a local daemon and a SQ
 
 ---
 
+## Three Patterns — 90% of use cases
+
+| Pattern | Call | When |
+|---------|------|------|
+| **Resume** | `smart_resume("myapp")` | Start of every session — auto-loads context |
+| **Run + remember** | `push_and_checkpoint("pytest tests/", project="myapp", ...)` | Push work and save state together |
+| **Full automation** | `auto_mode(enabled=True, project="myapp")` | Set once — everything runs automatically |
+
+Not sure where to start? Call `quickstart()` from any MCP session — it returns this guide live plus your project state.
+
+---
+
 ## The Problem
 
 AI agents have two fatal flaws in long-running work:
