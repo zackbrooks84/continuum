@@ -357,6 +357,10 @@ class DB:
         import json as _json
         # Fetch extra rows when filtering so we can hit the limit after tag pruning
         fetch_limit = limit * 5 if (tags or exclude_tags) else limit
+        # Sanitize query for FTS5 — wrap in quotes to treat as phrase,
+        # escaping any embedded quotes. This prevents hyphens, colons, etc.
+        # from being interpreted as FTS5 operators.
+        safe_query = '"{}"'.format(query.replace('"', '""'))
         rows = self._conn.execute(
             """
             SELECT f.id, f.project, f.current_task, f.goal, c.timestamp, c.data
@@ -366,7 +370,7 @@ class DB:
             ORDER BY rank
             LIMIT ?
             """,
-            (query, fetch_limit),
+            (safe_query, fetch_limit),
         ).fetchall()
 
         results = []
