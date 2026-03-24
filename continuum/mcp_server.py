@@ -1,76 +1,79 @@
 """
-Continuum MCP server — unified tool surface for Claude Code agents.
+Continuum MCP server — persistent memory + async execution for Claude Code agents.
 
-Tools exposed:
-  Task Queue (push work offline):
-    forge_push          — queue a shell command, optionally auto-checkpoint
-    forge_status        — queue stats or specific task status
-    forge_list          — list tasks by status
-    forge_result        — full output of a completed task
-    forge_cancel        — cancel a pending task
-    forge_run_now       — run a task immediately (no daemon needed)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  NOT SURE WHERE TO START?  Call quickstart() — it returns this guide live.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Checkpoints (persist reasoning across sessions):
+THREE PATTERNS — cover 90% of use cases:
+
+  Pattern 1 · Resume a project (start of every session)
+    smart_resume("myapp")
+    → auto-searches memory, picks the right depth, returns context
+
+  Pattern 2 · Run + remember (push work and checkpoint together)
+    push_and_checkpoint("pytest tests/", project="myapp", ...)
+    → queues the task AND saves current state in one call
+
+  Pattern 3 · Full automation (set once, never think about it again)
+    auto_mode(enabled=True, project="myapp")
+    → activates auto-observe + auto-sync + smart retrieval simultaneously
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TOOL TIERS:
+
+  [CORE] — use these every session:
+    quickstart          — orientation guide + tiered tool inventory (call this first)
+    smart_resume        — resume a project: auto-depth 3-tier memory retrieval
     checkpoint          — save work state: goal, findings, decisions, next_steps
-    handoff             — generate compact resume briefing (<1k tokens)
+    handoff             — compact resume briefing (<1k tokens) for end of session
+    auto_mode           — activate all automation layers at once
+
+  [COMMON] — reach for these regularly:
+    forge_push          — queue a shell command to run in the background
+    push_and_checkpoint — queue a task AND checkpoint current state together
+    remember            — multi-project briefing for session start (~300 tokens)
+    notify_configure    — set up Telegram/Discord/Slack alerts on task complete
+    observe_control     — turn passive tool-call capture on/off/status
+    sync_files          — write MEMORY.md / DECISIONS.md / TASKS.md to disk
+    forge_status        — check task queue or specific task status
+    forge_result        — get full output of a completed task
+
+  [ADVANCED] — power features, use when you need them:
+    memory_search       — manual FTS search (smart_resume wraps this automatically)
+    memory_timeline     — chronological context slice around a checkpoint
+    memory_get          — full details for specific checkpoint IDs
+    forge_list          — list tasks by status filter
+    forge_cancel        — cancel a pending task
+    forge_run_now       — run a task immediately, no daemon needed
     status              — latest checkpoint for a project
     history             — list recent checkpoints
-    projects            — list all active projects
-
-  Hybrid (push + checkpoint in one call):
-    push_and_checkpoint — queue a task AND save a pre-run checkpoint together
-
-  Memory (three-tier retrieval):
-    memory_search       — FTS search, returns compact ID + summary list
-    memory_timeline     — chronological context slice around a checkpoint
-    memory_get          — full details for specific IDs
-    remember            — auto-inject briefing for session start (~300 tokens)
-
-  Auto-observe (passive capture):
-    auto_observe_toggle — enable/disable passive tool-call capture for a project
-    observe_status      — current observer state + observation stats
-
-  Sync Files (structured project knowledge):
-    sync_files          — write MEMORY.md / DECISIONS.md / TASKS.md to a directory
-
-  Web ↔ Code bridge (portable handoff export/import):
-    export_handoff      — export handoff as portable markdown block with token preview
-    import_web_handoff  — parse + load a web-pasted handoff into local DB
-
-  Claude Dispatch (run headless Claude sessions as tasks):
-    dispatch_claude     — queue a headless `claude --print` session as a forge task
-
-  Token Guard (live budget tracking):
-    token_watch         — report usage; auto-checkpoint + system alert at threshold
-
-  Cross-agent (portable handoffs for any agent):
-    cross_agent_handoff — handoff formatted for claude/gpt/gemini/generic
-
-  Pattern Learning (recurring decision intelligence):
-    pattern_suggestions — surface repeated decision patterns with tag/rule suggestions
-
-  Notifications (Telegram / Discord / Slack / webhook):
-    notify_configure    — store channel config per-project; all tasks auto-notify on complete
+    projects            — list all tracked projects
+    export_handoff      — export handoff as portable markdown + token preview
+    import_web_handoff  — import a web-pasted handoff back into local DB
+    dispatch_claude     — run a headless `claude --print` session as a task
+    token_watch         — live context budget tracking + auto-checkpoint at threshold
+    cross_agent_handoff — handoff formatted for gpt/gemini/generic agents
+    pattern_suggestions — surface recurring decision patterns (fires after 5+ similar)
     notify_when_complete — one-time task notification (fires and self-deletes)
-    notify_test         — verify channels are reachable with a test message
+    notify_test         — test notification channels with a test message
 
-  Fully Automatic Mode (all layers, one call):
-    auto_mode           — activate auto-observe + auto-sync + smart retrieval at once
-    smart_resume        — 3-tier retrieval with automatic depth selection (replaces manual tiers)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Run via:
     uv run --project /path/to/continuum python -m continuum.mcp_server
 
 Environment variables:
+    CONTINUUM_AUTO_MODE=1           activate all automation layers on startup
     CONTINUUM_AUTO_OBSERVE=1        enable auto-observe globally
     CONTINUUM_OBSERVE_PROJECT=name  default project for observations
     CONTINUUM_OBSERVE_METHOD=claude use Claude Haiku to compress (needs ANTHROPIC_API_KEY)
-    CONTINUUM_TG_TOKEN=...         Telegram bot token (from @BotFather)
-    CONTINUUM_TG_CHAT=...          Telegram chat ID  (from @userinfobot)
-    CONTINUUM_DISCORD_WEBHOOK=...  Discord incoming webhook URL
-    CONTINUUM_SLACK_WEBHOOK=...    Slack incoming webhook URL
-    CONTINUUM_WEBHOOK_URL=...      Generic POST webhook URL
-    CONTINUUM_AUTO_MODE=1          activate all automation layers on startup
+    CONTINUUM_TG_TOKEN=...          Telegram bot token (from @BotFather)
+    CONTINUUM_TG_CHAT=...           Telegram chat ID  (from @userinfobot)
+    CONTINUUM_DISCORD_WEBHOOK=...   Discord incoming webhook URL
+    CONTINUUM_SLACK_WEBHOOK=...     Slack incoming webhook URL
+    CONTINUUM_WEBHOOK_URL=...       Generic POST webhook URL
 """
 from __future__ import annotations
 
@@ -141,6 +144,101 @@ def _maybe_observe(tool_name: str, kwargs: dict, result: Any) -> None:
 
 
 # ===========================================================================
+# Orientation — call this first if you're not sure what to do
+# ===========================================================================
+
+@mcp.tool()
+def quickstart(project: Optional[str] = None) -> dict:
+    """[CORE] Orientation guide — call this first if you're not sure where to start.
+
+    Returns the three core patterns, a tiered tool inventory, and (if project
+    is provided) the current state of that project.
+
+    Three patterns cover 90% of use cases:
+      1. Resume    → smart_resume("project")
+      2. Run+save  → push_and_checkpoint("command", project="x")
+      3. Automate  → auto_mode(enabled=True, project="x")
+    """
+    guide = {
+        "three_patterns": {
+            "1_resume": {
+                "call": "smart_resume('myapp')",
+                "when": "Start of every session — reloads context automatically",
+                "depth": "Auto-selects: full detail (1-3 hits) / timeline (4-10) / summaries (10+)",
+            },
+            "2_run_and_remember": {
+                "call": "push_and_checkpoint('pytest tests/', project='myapp', current_task='...', goal='...')",
+                "when": "Push background work AND save state in one call",
+                "output": "task_id + checkpoint_id",
+            },
+            "3_full_automation": {
+                "call": "auto_mode(enabled=True, project='myapp')",
+                "when": "Set once — activates all 3 layers and runs forever",
+                "layers": [
+                    "auto-observe: every tool call silently captured",
+                    "auto-sync: MEMORY/DECISIONS/TASKS.md updated on every checkpoint",
+                    "smart retrieval: handoff() auto-injects relevant history",
+                ],
+            },
+        },
+        "tool_tiers": {
+            "CORE — use every session": [
+                "quickstart        — this guide",
+                "smart_resume      — resume with auto-depth memory retrieval",
+                "checkpoint        — save goal / findings / decisions / next_steps",
+                "handoff           — compact end-of-session briefing (<1k tokens)",
+                "auto_mode         — activate all automation layers at once",
+            ],
+            "COMMON — reach for regularly": [
+                "forge_push        — queue a shell command in the background",
+                "push_and_checkpoint — queue task + save checkpoint together",
+                "remember          — multi-project briefing (~300 tokens)",
+                "notify_configure  — Telegram/Discord/Slack alerts on task complete",
+                "observe_control   — passive capture on/off/status",
+                "sync_files        — write MEMORY.md / DECISIONS.md / TASKS.md",
+                "forge_status      — check task queue or specific task",
+                "forge_result      — full output of a completed task",
+            ],
+            "ADVANCED — power features": [
+                "memory_search     — manual FTS (smart_resume wraps this)",
+                "memory_timeline   — chronological slice around a checkpoint",
+                "memory_get        — full detail for specific checkpoint IDs",
+                "token_watch       — live context budget + auto-checkpoint at 80%",
+                "export_handoff    — portable markdown export with token preview",
+                "import_web_handoff — import a web-pasted handoff",
+                "dispatch_claude   — run headless `claude --print` as a task",
+                "cross_agent_handoff — handoff for gpt/gemini/generic agents",
+                "pattern_suggestions — recurring decision patterns after 5+ similar",
+                "notify_when_complete — one-time task notification",
+                "forge_list / forge_cancel / forge_run_now / history / projects / status",
+            ],
+        },
+        "tip": (
+            "New to Continuum? Start with auto_mode(enabled=True, project='yourproject') "
+            "then just work — everything else runs automatically."
+        ),
+    }
+
+    if project:
+        cp = _db.latest_checkpoint(project)
+        guide["project_state"] = {
+            "project": project,
+            "has_checkpoint": cp is not None,
+            "latest_task": cp.current_task if cp else None,
+            "status": cp.status if cp else None,
+            "timestamp": cp.timestamp.isoformat() if cp else None,
+            "next_steps": cp.next_steps[:3] if cp else [],
+            "tip": (
+                f"Call smart_resume('{project}') to load full context."
+                if cp else
+                f"No checkpoints yet. Call checkpoint(project='{project}', ...) to start tracking."
+            ),
+        }
+
+    return guide
+
+
+# ===========================================================================
 # Task Queue
 # ===========================================================================
 
@@ -157,7 +255,7 @@ def forge_push(
     min_free_ram_mb: int = 256,
     tags: Optional[list[str]] = None,
 ) -> dict:
-    """Push a shell command onto the Continuum task queue.
+    """[COMMON] Push a shell command onto the Continuum task queue.
 
     The daemon picks it up and runs it offline — you can close your session.
     Set auto_checkpoint=True with a project name to automatically save a
@@ -201,7 +299,7 @@ def forge_push(
 
 @mcp.tool()
 def forge_status(task_id: Optional[str] = None) -> dict:
-    """Get status of a specific task, or overall queue stats + daemon status.
+    """[COMMON] Get status of a specific task, or overall queue stats + daemon status.
 
     Args:
         task_id: Specific task ID, or None for queue summary
@@ -247,7 +345,7 @@ def forge_list(status: Optional[str] = None, limit: int = 20) -> list[dict]:
 
 @mcp.tool()
 def forge_result(task_id: str) -> dict:
-    """Get the full stdout/stderr of a completed task.
+    """[COMMON] Get the full stdout/stderr of a completed task.
 
     Args:
         task_id: Task ID to retrieve result for
@@ -333,7 +431,7 @@ def checkpoint(
     decisions: Optional[list[dict]] = None,
     agent: Optional[str] = None,
 ) -> dict:
-    """Save a checkpoint of your current work state.
+    """[CORE] Save a checkpoint of your current work state.
 
     Call this at natural break points — before closing a session, when
     blocked, after a major finding, or before handing off to another agent.
@@ -395,7 +493,7 @@ def handoff(
     target_agent: Optional[str] = None,
     save: bool = True,
 ) -> dict:
-    """Generate a compact resume briefing (<1k tokens) for a new agent session.
+    """[CORE] Generate a compact resume briefing (<1k tokens) for a new agent session.
 
     Load this at the start of a new session to instantly understand where
     you left off — without re-reading logs or re-deriving context.
@@ -523,11 +621,11 @@ def push_and_checkpoint(
     priority: int = 5,
     tags: Optional[list[str]] = None,
 ) -> dict:
-    """Queue a task AND save a pre-run checkpoint in one call.
+    """[CORE] Queue a task AND save a pre-run checkpoint in one call.
 
     Use this when you're about to go offline: it records your current
     reasoning state AND queues the work to run while you're gone.
-    When you return, call handoff(project) to resume with full context.
+    When you return, call smart_resume(project) to reload full context.
 
     Args:
         name: Task name
@@ -586,7 +684,10 @@ def memory_search(
     tags: Optional[list[str]] = None,
     exclude_tags: Optional[list[str]] = None,
 ) -> dict:
-    """Search across all checkpoints using full-text search.
+    """[ADVANCED] Search across all checkpoints using full-text search.
+
+    Tip: use smart_resume(project) instead — it calls this automatically and
+    selects the right depth. Use memory_search() only when you need manual control.
 
     Returns a compact list of matching checkpoint IDs and short summaries —
     designed to be cheap to scan. Use memory_get() to fetch full details
@@ -616,7 +717,10 @@ def memory_search(
 
 @mcp.tool()
 def memory_timeline(checkpoint_id: str, window: int = 5) -> dict:
-    """Return a chronological context slice around a checkpoint.
+    """[ADVANCED] Return a chronological context slice around a checkpoint.
+
+    Tip: use smart_resume(project) instead — it calls this automatically for
+    medium-density results. Use memory_timeline() only for manual control.
 
     Fetches up to `window` checkpoints before and after the given one
     within the same project — useful for understanding how thinking evolved.
@@ -647,7 +751,7 @@ def memory_timeline(checkpoint_id: str, window: int = 5) -> dict:
 
 @mcp.tool()
 def memory_get(ids: list[str]) -> dict:
-    """Fetch full checkpoint details for a list of IDs.
+    """[ADVANCED] Fetch full checkpoint details for a list of IDs.
 
     Use this after memory_search() or memory_timeline() when you need the
     complete state: all findings, dead ends, decisions, next steps.
@@ -682,7 +786,7 @@ def memory_get(ids: list[str]) -> dict:
 
 @mcp.tool()
 def remember(days: int = 14) -> dict:
-    """Auto-inject: compact briefing of all active projects for session start.
+    """[COMMON] Auto-inject: compact briefing of all active projects for session start.
 
     Call this at the beginning of every new session. Returns a ~200-400 token
     summary of what's been going on — project statuses, current tasks, and
@@ -729,72 +833,90 @@ def remember(days: int = 14) -> dict:
 # ===========================================================================
 
 @mcp.tool()
+def observe_control(
+    action: str = "status",
+    project: Optional[str] = None,
+    method: str = "rule",
+    compress_every: int = 20,
+) -> dict:
+    """[COMMON] Control passive tool-call capture (auto-observe) for this session.
+
+    Merges enable/disable/status into one tool — no need to remember two names.
+
+    Actions:
+      "on"     — start capturing every tool call as an observation; daemon
+                 compresses batches into checkpoints automatically
+      "off"    — stop capturing for this session
+      "status" — show current state + observation counts (default)
+
+    Compression methods (only relevant for action="on"):
+      rule   — fast, no API, groups tool calls by type (default)
+      claude — calls Claude Haiku to write structured findings
+               (requires ANTHROPIC_API_KEY)
+
+    Tip: use auto_mode(enabled=True, project=...) to activate this alongside
+    auto-sync and smart retrieval all at once.
+
+    Args:
+        action:        "on", "off", or "status"
+        project:       Project to attribute observations to (required for "on")
+        method:        "rule" or "claude"
+        compress_every: Compress after this many observations
+    """
+    global _auto_observe, _observe_project, _observe_method
+
+    if action == "on":
+        _auto_observe = True
+        if project:
+            _observe_project = project
+        _observe_method = method
+    elif action == "off":
+        _auto_observe = False
+
+    all_stats  = _db.observation_stats()
+    proj_stats = _db.observation_stats(_observe_project) if _observe_project else None
+
+    return {
+        "action": action,
+        "auto_observe": _auto_observe,
+        "observe_project": _observe_project,
+        "method": _observe_method,
+        "compress_every": compress_every,
+        "stats": {"global": all_stats, "current_project": proj_stats},
+        "message": (
+            f"Auto-observe {'enabled' if _auto_observe else 'disabled'}"
+            + (f" for '{_observe_project}'" if _observe_project else "")
+            + (f" (method={_observe_method}, compress every {compress_every})" if _auto_observe else "")
+        ),
+        "tip": (
+            "Call observe_control('on', project='myapp') to start capturing."
+            if not _auto_observe else
+            f"Capturing tool calls for '{_observe_project}'. Daemon compresses every {compress_every} observations."
+        ),
+    }
+
+
+# Keep legacy names as thin aliases so existing agents don't break
+@mcp.tool()
 def auto_observe_toggle(
     enabled: bool,
     project: Optional[str] = None,
     method: str = "rule",
     compress_every: int = 20,
 ) -> dict:
-    """Enable or disable passive auto-observe for this session.
-
-    When enabled, every tool call is quietly summarized and stored as an
-    observation. The daemon compressor thread rolls these into checkpoints
-    automatically — no manual checkpoint() calls required.
-
-    Compression methods:
-      rule   — fast, no API, groups tool calls by type (default)
-      claude — calls Claude Haiku to write structured findings
-               (requires ANTHROPIC_API_KEY environment variable)
-
-    Args:
-        enabled: Turn auto-observe on or off
-        project: Project to attribute observations to (required when enabling)
-        method: "rule" or "claude"
-        compress_every: Compress into a checkpoint after this many observations
-    """
-    global _auto_observe, _observe_project, _observe_method
-    _auto_observe = enabled
-    if project:
-        _observe_project = project
-    _observe_method = method
-
-    return {
-        "auto_observe": _auto_observe,
-        "observe_project": _observe_project,
-        "method": _observe_method,
-        "compress_every": compress_every,
-        "message": (
-            f"Auto-observe {'enabled' if enabled else 'disabled'}"
-            + (f" for project '{_observe_project}'" if _observe_project else "")
-            + f" (method={method}, compress every {compress_every} observations)"
-        ),
-    }
+    """[ADVANCED] Deprecated alias — use observe_control(action='on'/'off') instead."""
+    return observe_control(
+        action="on" if enabled else "off",
+        project=project,
+        method=method,
+        compress_every=compress_every,
+    )
 
 
 @mcp.tool()
 def observe_status() -> dict:
-    """Check current auto-observe state and observation counts.
-
-    Returns the session's observe config and DB stats so you can see
-    how many observations are pending compression.
-    """
-    all_stats = _db.observation_stats()
-    proj_stats = _db.observation_stats(_observe_project) if _observe_project else None
-
-    return {
-        "auto_observe": _auto_observe,
-        "observe_project": _observe_project,
-        "method": _observe_method,
-        "stats": {
-            "global": all_stats,
-            "current_project": proj_stats,
-        },
-        "tip": (
-            "Use auto_observe_toggle(enabled=True, project='myproject') to start."
-            if not _auto_observe
-            else f"Capturing tool calls for '{_observe_project}'. Daemon compresses every 20 observations."
-        ),
-    }
+    """[ADVANCED] Deprecated alias — use observe_control(action='status') instead."""
+    return observe_control(action="status")
 
 
 # ===========================================================================
@@ -808,7 +930,7 @@ def auto_mode(
     method: str = "rule",
     compress_every: int = 20,
 ) -> dict:
-    """Activate (or deactivate) all three Continuum automation layers at once.
+    """[CORE] Activate (or deactivate) all three Continuum automation layers at once.
 
     One call replaces three separate setup steps:
       Layer 1 — Auto-observe: every tool call silently captured as an observation
@@ -880,7 +1002,7 @@ def smart_resume(
     query: Optional[str] = None,
     window: int = 5,
 ) -> dict:
-    """Three-tier memory retrieval in one call — automatically picks the right depth.
+    """[CORE] Three-tier memory retrieval in one call — automatically picks the right depth.
 
     Replaces the manual memory_search → memory_timeline → memory_get workflow.
     Automatically selects how deep to go based on what it finds:
