@@ -824,5 +824,189 @@ def remote_token_cmd(generate):
         console.print(f"[red]Error:[/red] {e}")
 
 
+# ===========================================================================
+# North Star — session start briefing (also used by SessionStart hook)
+# ===========================================================================
+
+@cli.command("north-star")
+@click.option("--hook", "hook_mode", is_flag=True, hidden=True,
+              help="Output JSON for Claude Code SessionStart hook injection")
+@click.option("--project", "-p", default=None, help="Include latest checkpoint for this project")
+def north_star_cmd(hook_mode, project):
+    """Print your persistent context briefing — who you are, how Claude works with you.
+
+    \b
+    Used automatically at session start via the SessionStart hook.
+    Run manually to verify your stored memories are correct.
+
+    Examples:
+      continuum north-star
+      continuum north-star --project myapp
+    """
+    from .db import DB
+    db = DB()
+
+    lines = ["## Continuum North Star — Session Context\n"]
+
+    # User identity
+    user_mems = db.all_user_memory()
+    if user_mems:
+        lines.append("### Who I Am")
+        for m in user_mems:
+            lines.append(f"- **{m['key']}** ({m['category']}): {m['value']}")
+        lines.append("")
+
+    # Agent protocol
+    agent_mems = db.all_agent_memory()
+    if agent_mems:
+        lines.append("### How We Work Together")
+        for m in agent_mems:
+            lines.append(f"- **{m['key']}** ({m['category']}): {m['value']}")
+        lines.append("")
+
+    # Latest project checkpoint
+    if project:
+        cp = db.latest_checkpoint(project)
+        if cp:
+            lines.append(f"### Active Project: {project}")
+            lines.append(f"- **Goal**: {cp.goal or 'not set'}")
+            lines.append(f"- **Current task**: {cp.current_task or 'not set'}")
+            lines.append(f"- **Status**: {cp.status or 'unknown'}")
+            if cp.next_steps:
+                lines.append(f"- **Next steps**: {', '.join(cp.next_steps[:3])}")
+            lines.append("")
+
+    # Recent active projects summary
+    summaries = db.recent_project_summaries(days=14)
+    if summaries and not project:
+        lines.append("### Active Projects")
+        for s in summaries[:5]:
+            lines.append(f"- **{s['project']}**: {s['current_task'] or 'no task'} ({s['status'] or '?'})")
+        lines.append("")
+
+    if len(lines) == 1:
+        lines.append("_No memories stored yet. Use `remember_me()` or `continuum memory remember` to add context._")
+
+    briefing = "\n".join(lines)
+
+    if hook_mode:
+        import json as _json
+        payload = {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": briefing
+            }
+        }
+        click.echo(_json.dumps(payload))
+    else:
+        console.print(briefing)
+
+
+# ===========================================================================
+# Memory import — bulk load from JSON or markdown
+# ===========================================================================
+
+@memory.command("import")
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--type", "mem_type", default="user",
+              type=click.Choice(["user", "agent"]),
+              help="Import as user or agent memories")
+@click.option("--dry-run", is_flag=True, help="Preview without storing")
+def memory_import(file, mem_type, dry_run):
+    """Bulk import memories from a JSON or Markdown file.
+
+    \b
+    JSON format (array of objects):
+      [{"key": "name", "value": "Jane", "category": "bio"}, ...]
+
+    Markdown format (each line: - key: value  or  key | value | category):
+      - name: Jane Smith
+      - coding_style: minimal dependencies | technical
+
+    Examples:
+      continuum memory import memories.json
+      continuum memory import notes.md --type agent --dry-run
+    """
+    import json as _json
+    from .db import DB
+    from .models import UserMemory, AgentMemory, MemoryCategory, AgentMemoryCategory
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    db = DB()
+    path = Path(file)
+    text = path.read_text(encoding="utf-8")
+    records = []
+
+    if path.suffix == ".json":
+        raw = _json.loads(text)
+        if isinstance(raw, list):
+            records = raw
+        elif isinstance(raw, dict):
+            records = [{"key": k, "value": v} for k, v in raw.items()]
+    else:
+        # Markdown: parse lines starting with - or bullet
+        for line in text.splitlines():
+            line = line.strip().lstrip("-").strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 2:
+                records.append({"key": parts[0], "value": parts[1],
+                                 "category": parts[2] if len(parts) > 2 else "preferences"})
+            elif ":" in line:
+                key, _, val = line.partition(":")
+                records.append({"key": key.strip(), "value": val.strip()})
+
+    if not records:
+        console.print("[yellow]No records found in file.[/]")
+        return
+
+    console.print(f"[bold]Found {len(records)} record(s)[/]  (type={mem_type})"
+                  + (" [dry-run]" if dry_run else ""))
+
+    stored = 0
+    for r in records:
+        key = r.get("key") or r.get("k", "").strip()
+        value = r.get("value") or r.get("v", "").strip()
+        category = r.get("category", "preferences")
+
+        if not key or not value:
+            continue
+
+        if not dry_run:
+            if mem_type == "user":
+                try:
+                    cat = MemoryCategory(category)
+                except ValueError:
+                    cat = MemoryCategory.preferences
+                mem = UserMemory(
+                    id=str(_uuid.uuid4()),
+                    key=key, value=value, category=cat,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                db.remember_user(mem)
+            else:
+                try:
+                    cat = AgentMemoryCategory(category)
+                except ValueError:
+                    cat = AgentMemoryCategory.protocol
+                mem = AgentMemory(
+                    id=str(_uuid.uuid4()),
+                    key=key, value=value, category=cat,
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                db.remember_agent(mem)
+        console.print(f"  [green]✓[/] {key}: {value[:60]}{'...' if len(value) > 60 else ''}")
+        stored += 1
+
+    if not dry_run:
+        console.print(f"\n[green]Imported {stored} memories.[/]")
+    else:
+        console.print(f"\n[dim]Dry run — {stored} would be imported. Remove --dry-run to store.[/]")
+
+
 if __name__ == "__main__":
     cli()
