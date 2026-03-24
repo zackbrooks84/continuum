@@ -260,7 +260,7 @@ def cancel(task_id):
 # Checkpoints
 # ===========================================================================
 
-@cli.command()
+@cli.command(name="checkpoint")
 @click.argument("project")
 @click.option("--task", "-t", required=True, help="What you're doing right now")
 @click.option("--goal", "-g", required=True, help="Overall goal")
@@ -304,6 +304,10 @@ def cp(project, task, goal, status, context, finding, dead_end, next, question, 
     db.save_checkpoint(checkpoint)
     console.print(f"[green]✓[/] Checkpoint saved: [cyan]{checkpoint.id[:8]}[/] for project [bold]{project}[/]")
     console.print(f"  Resume: [dim]continuum resume {project}[/]")
+
+
+# Alias: `continuum cp` works the same as `continuum checkpoint`
+cli.add_command(cp, name="cp")
 
 
 @cli.command()
