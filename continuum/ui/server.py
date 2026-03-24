@@ -192,8 +192,8 @@ async def dashboard():
 
     task_rows = ""
     for t in recent_tasks:
-        cmd = t.command[:60] + ("\u2026" if len(t.command) > 60 else "")
-        proj = f'<span class="text-violet-400">{t.project}</span>' if t.project else '<span class="text-slate-600">\u2014</span>'
+        cmd = t.command[:60] + ("…" if len(t.command) > 60 else "")
+        proj = f'<span class="text-violet-400">{t.project}</span>' if t.project else '<span class="text-slate-600">—</span>'
         task_rows += f'''
         <tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors">
           <td class="py-3 px-4"><code class="text-xs text-slate-300 font-mono">{t.id}</code></td>
@@ -235,7 +235,7 @@ async def dashboard():
         <div class="lg:col-span-2">
           <div class="flex items-center justify-between mb-3">
             <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Recent Tasks</h2>
-            <a href="/tasks" class="text-xs text-violet-400 hover:text-violet-300">View all \u2192</a>
+            <a href="/tasks" class="text-xs text-violet-400 hover:text-violet-300">View all →</a>
           </div>
           <div class="card overflow-hidden">
             <table class="w-full text-sm">
@@ -249,7 +249,7 @@ async def dashboard():
                 </tr>
               </thead>
               <tbody>
-                {task_rows or '<tr><td colspan="5" class="py-8 text-center text-slate-500 text-sm">No tasks yet \u2014 use forge_push() or continuum push</td></tr>'}
+                {task_rows or '<tr><td colspan="5" class="py-8 text-center text-slate-500 text-sm">No tasks yet — use forge_push() or continuum push</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -259,10 +259,10 @@ async def dashboard():
         <div>
           <div class="flex items-center justify-between mb-3">
             <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Active Projects</h2>
-            <a href="/projects" class="text-xs text-violet-400 hover:text-violet-300">View all \u2192</a>
+            <a href="/projects" class="text-xs text-violet-400 hover:text-violet-300">View all →</a>
           </div>
           <div class="space-y-3">
-            {project_cards or '<div class="card p-6 text-center text-slate-500 text-sm">No projects yet \u2014 use checkpoint() to start tracking</div>'}
+            {project_cards or '<div class="card p-6 text-center text-slate-500 text-sm">No projects yet — use checkpoint() to start tracking</div>'}
           </div>
         </div>
       </div>
@@ -294,10 +294,10 @@ async def tasks_page(project: str = "", status: str = ""):
 
     rows = ""
     for t in all_tasks:
-        cmd = t.command[:80] + ("\u2026" if len(t.command) > 80 else "")
-        proj = f'<a href="/projects/{t.project}" class="text-violet-400 hover:text-violet-300">{t.project}</a>' if t.project else '<span class="text-slate-600">\u2014</span>'
-        result_link = f'<a href="/tasks/{t.id}" class="text-xs text-slate-400 hover:text-white">view output \u2192</a>' if t.status.value in ("done", "failed") else ""
-        approve_btn = f'<a href="/tasks/{t.id}/approve" class="text-xs text-blue-400 hover:text-blue-300">approve \u2192</a>' if t.status.value == "pending_confirm" else ""
+        cmd = t.command[:80] + ("…" if len(t.command) > 80 else "")
+        proj = f'<a href="/projects/{t.project}" class="text-violet-400 hover:text-violet-300">{t.project}</a>' if t.project else '<span class="text-slate-600">—</span>'
+        result_link = f'<a href="/tasks/{t.id}" class="text-xs text-slate-400 hover:text-white">view output →</a>' if t.status.value in ("done", "failed") else ""
+        approve_btn = f'<a href="/tasks/{t.id}/approve" class="text-xs text-blue-400 hover:text-blue-300">approve →</a>' if t.status.value == "pending_confirm" else ""
         rows += f'''
         <tr class="border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors">
           <td class="py-3 px-4"><code class="text-xs text-slate-300 font-mono">{t.id}</code></td>
@@ -365,7 +365,7 @@ async def task_detail(task_id: str):
         <div class="mt-6">
           <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Output</h2>
           <div class="card p-4">
-            <div class="text-xs text-slate-400 mb-2">stdout \u00b7 exit code {result.exit_code} \u00b7 {result.duration_seconds:.1f}s</div>
+            <div class="text-xs text-slate-400 mb-2">stdout · exit code {result.exit_code} · {result.duration_seconds:.1f}s</div>
             <pre class="text-xs text-slate-300 font-mono overflow-auto max-h-96 whitespace-pre-wrap">{stdout or "(empty)"}</pre>
             {"<div class='mt-3 pt-3 border-t border-slate-700'><div class='text-xs text-red-400 mb-2'>stderr</div><pre class='text-xs text-red-300 font-mono overflow-auto max-h-48 whitespace-pre-wrap'>" + stderr + "</pre></div>" if stderr else ""}
           </div>
@@ -375,7 +375,7 @@ async def task_detail(task_id: str):
     if task.status.value == "pending_confirm":
         approve_html = f'''
         <div class="mt-4 p-4 rounded-lg" style="background:#1a2535; border:1px solid #3b82f6aa;">
-          <div class="text-sm text-blue-300 font-medium mb-2">\u26a0 This task requires approval before it will run</div>
+          <div class="text-sm text-blue-300 font-medium mb-2">⚠ This task requires approval before it will run</div>
           <a href="/tasks/{task_id}/approve" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white" style="background:#2563eb;">
             Approve &amp; Run
           </a>
@@ -384,7 +384,7 @@ async def task_detail(task_id: str):
     content = f'''
     <div class="p-6 max-w-4xl mx-auto">
       <div class="mb-4">
-        <a href="/tasks" class="text-sm text-slate-400 hover:text-white">\u2190 Tasks</a>
+        <a href="/tasks" class="text-sm text-slate-400 hover:text-white">← Tasks</a>
       </div>
       <div class="flex items-start justify-between mb-6">
         <div>
@@ -394,7 +394,7 @@ async def task_detail(task_id: str):
         {_badge(task.status.value)}
       </div>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div class="card p-3"><div class="text-xs text-slate-400 mb-1">Project</div><div class="text-sm text-violet-400">{task.project or "\u2014"}</div></div>
+        <div class="card p-3"><div class="text-xs text-slate-400 mb-1">Project</div><div class="text-sm text-violet-400">{task.project or "—"}</div></div>
         <div class="card p-3"><div class="text-xs text-slate-400 mb-1">Priority</div><div class="text-sm text-white">{task.priority}</div></div>
         <div class="card p-3"><div class="text-xs text-slate-400 mb-1">Created</div><div class="text-sm text-white">{_rel_time(task.created_at)}</div></div>
         <div class="card p-3"><div class="text-xs text-slate-400 mb-1">Auto-checkpoint</div><div class="text-sm text-white">{"Yes" if task.auto_checkpoint else "No"}</div></div>
@@ -441,7 +441,7 @@ async def projects_page():
           <div class="text-sm text-slate-400 mb-3 line-clamp-2">{task_text}</div>
           <div class="flex items-center justify-between">
             <div class="text-xs text-slate-500">Last checkpoint {_rel_time(ts)}</div>
-            <span class="text-xs text-violet-400 opacity-0 group-hover:opacity-100 transition-opacity">View timeline \u2192</span>
+            <span class="text-xs text-violet-400 opacity-0 group-hover:opacity-100 transition-opacity">View timeline →</span>
           </div>
         </a>'''
 
@@ -452,7 +452,7 @@ async def projects_page():
         <p class="text-slate-400 text-sm mt-1">{len(summaries)} project{"s" if len(summaries)!=1 else ""} tracked</p>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {cards or '<div class="card p-8 col-span-3 text-center text-slate-500">No projects yet \u2014 use checkpoint() to start tracking a project</div>'}
+        {cards or '<div class="card p-8 col-span-3 text-center text-slate-500">No projects yet — use checkpoint() to start tracking a project</div>'}
       </div>
     </div>'''
 
@@ -467,7 +467,7 @@ async def project_detail(project: str):
     if not checkpoints:
         content = f'''
         <div class="p-6">
-          <a href="/projects" class="text-sm text-slate-400 hover:text-white">\u2190 Projects</a>
+          <a href="/projects" class="text-sm text-slate-400 hover:text-white">← Projects</a>
           <div class="mt-6 card p-8 text-center text-slate-500">No checkpoints for "{project}" yet</div>
         </div>'''
         return HTMLResponse(_base(project, content, "projects"))
@@ -495,7 +495,7 @@ async def project_detail(project: str):
           <ul class="space-y-1 list-disc list-inside">{_list_items(latest.findings, "slate-300")}</ul>
         </div>
         <div class="card p-4">
-          <div class="text-xs text-red-400 uppercase tracking-wider mb-2">Dead Ends \u2014 Do Not Repeat</div>
+          <div class="text-xs text-red-400 uppercase tracking-wider mb-2">Dead Ends — Do Not Repeat</div>
           <ul class="space-y-1 list-disc list-inside">{_list_items(latest.dead_ends, "red-300")}</ul>
         </div>
         <div class="card p-4">
@@ -510,7 +510,7 @@ async def project_detail(project: str):
     for i, cp in enumerate(checkpoints):
         is_latest = i == 0
         dot_color = "bg-violet-500" if is_latest else "bg-slate-600"
-        findings_preview = " \u00b7 ".join(cp.findings[:2])[:80] if cp.findings else "No findings"
+        findings_preview = " · ".join(cp.findings[:2])[:80] if cp.findings else "No findings"
         decisions_html = ""
         if cp.decisions:
             decisions_html = f'<div class="mt-2 text-xs text-amber-400">{len(cp.decisions)} decision{"s" if len(cp.decisions)!=1 else ""}: {cp.decisions[0].what[:60]}</div>'
@@ -528,19 +528,19 @@ async def project_detail(project: str):
             </div>
             <div class="text-xs text-slate-400">{findings_preview}</div>
             {decisions_html}
-            {"<div class='mt-1 text-xs text-violet-400'>\u2190 Latest</div>" if is_latest else ""}
+            {"<div class='mt-1 text-xs text-violet-400'>← Latest</div>" if is_latest else ""}
           </div>
         </div>'''
 
     content = f'''
     <div class="p-6 max-w-5xl mx-auto">
       <div class="mb-4">
-        <a href="/projects" class="text-sm text-slate-400 hover:text-white">\u2190 Projects</a>
+        <a href="/projects" class="text-sm text-slate-400 hover:text-white">← Projects</a>
       </div>
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl font-bold text-white">{project}</h1>
-          <p class="text-slate-400 text-sm mt-1">{len(checkpoints)} checkpoint{"s" if len(checkpoints)!=1 else ""} \u00b7 last updated {_rel_time(latest.timestamp)}</p>
+          <p class="text-slate-400 text-sm mt-1">{len(checkpoints)} checkpoint{"s" if len(checkpoints)!=1 else ""} · last updated {_rel_time(latest.timestamp)}</p>
         </div>
         {_badge(latest.status)}
       </div>
@@ -570,7 +570,7 @@ async def timeline_page(project: str = ""):
 
     items = ""
     for cp in checkpoints:
-        findings_preview = " \u00b7 ".join(cp.findings[:2])[:100] if cp.findings else ""
+        findings_preview = " · ".join(cp.findings[:2])[:100] if cp.findings else ""
         items += f'''
         <div class="timeline-line relative pb-5 pl-6">
           <div class="absolute left-0 top-1.5 w-4 h-4 rounded-full bg-slate-600 border-2 border-slate-900 z-10"></div>
@@ -578,7 +578,7 @@ async def timeline_page(project: str = ""):
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-1">
                 <a href="/projects/{cp.project}" class="text-xs font-medium text-violet-400 hover:text-violet-300">{cp.project}</a>
-                <span class="text-xs text-slate-600">\u00b7</span>
+                <span class="text-xs text-slate-600">·</span>
                 <span class="text-xs text-slate-500">{_rel_time(cp.timestamp)}</span>
                 {_badge(cp.status)}
               </div>
@@ -655,7 +655,7 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
             "UI dependencies missing. Install with: pip install continuum[ui]"
         )
     url = f"http://{host}:{port}"
-    print(f"  Continuum UI \u2192 {url}")
+    print(f"  Continuum UI → {url}")
     if open_browser:
         import threading
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()

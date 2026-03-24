@@ -25,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
 ui  = ["fastapi>=0.110.0", "uvicorn>=0.29.0"]
+remote = ["anyio>=4.0.0"]
 
 [project.scripts]
 continuum = "continuum.cli:cli"

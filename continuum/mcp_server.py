@@ -25,6 +25,12 @@ TOOL TIERS:
 
   [CORE] — use these every session:
     quickstart          — orientation guide + tiered tool inventory (call this first)
+    north_star          — unified session briefing: user identity + agent protocols + projects
+    remember_me         — store a user fact (bio, preference, rule)
+    recall_me           — retrieve user facts by FTS search or category
+    remember_this       — store an agent behavioral protocol or constraint
+    recall_this         — retrieve agent protocols by FTS search
+    forget              — delete a user or agent memory
     smart_resume        — resume a project: auto-depth 3-tier memory retrieval
     checkpoint          — save work state: goal, findings, decisions, next_steps
     handoff             — compact resume briefing (<1k tokens) for end of session
@@ -69,6 +75,7 @@ Environment variables:
     CONTINUUM_AUTO_OBSERVE=1        enable auto-observe globally
     CONTINUUM_OBSERVE_PROJECT=name  default project for observations
     CONTINUUM_OBSERVE_METHOD=claude use Claude Haiku to compress (needs ANTHROPIC_API_KEY)
+    CONTINUUM_REMOTE_TOKEN=...      Bearer token for remote HTTP server
     CONTINUUM_TG_TOKEN=...          Telegram bot token (from @BotFather)
     CONTINUUM_TG_CHAT=...           Telegram chat ID  (from @userinfobot)
     CONTINUUM_DISCORD_WEBHOOK=...   Discord incoming webhook URL
@@ -79,12 +86,12 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from fastmcp import FastMCP
 
 from pathlib import Path
-from .models import Task, TaskStatus, Checkpoint, Decision, ProjectConfig
+from .models import Task, TaskStatus, Checkpoint, Decision, ProjectConfig, UserMemory, AgentMemory, MemoryCategory, AgentMemoryCategory
 from .db import DB
 from .handoff import generate_handoff
 from .daemon import daemon_status
@@ -184,6 +191,7 @@ def quickstart(project: Optional[str] = None) -> dict:
         "tool_tiers": {
             "CORE — use every session": [
                 "quickstart        — this guide",
+                "north_star        — call FIRST each session: user identity + protocols + projects briefing",
                 "smart_resume      — resume with auto-depth memory retrieval",
                 "checkpoint        — save goal / findings / decisions / next_steps",
                 "handoff           — compact end-of-session briefing (<1k tokens)",
@@ -214,8 +222,9 @@ def quickstart(project: Optional[str] = None) -> dict:
             ],
         },
         "tip": (
-            "New to Continuum? Start with auto_mode(enabled=True, project='yourproject') "
-            "then just work — everything else runs automatically."
+            "Start every session with north_star() — it returns your user identity, "
+            "agent protocols, and active projects in one <500-token briefing. "
+            "Then call smart_resume('yourproject') or auto_mode(enabled=True, project='yourproject')."
         ),
     }
 
@@ -1430,6 +1439,252 @@ def notify_test(
 
 
 # ===========================================================================
+# Personal Memory — user identity + agent behavioral protocols
+# ===========================================================================
+
+
+@mcp.tool()
+def remember_me(
+    key: str,
+    value: str,
+    category: str = "preferences",
+    tags: Optional[List[str]] = None,
+) -> dict:
+    """[CORE] Store a fact about the user — persists forever across sessions.
+
+    This is YOUR memory about the person you work with. Use it to remember
+    their bio, how they like things done, technical preferences, rules they've
+    set, and research interests. Recalled automatically in north_star().
+
+    Categories: bio | preferences | technical | research | rules | relationship
+
+    Examples:
+        remember_me("name", "Jane Smith", category="bio")
+        remember_me("code_style", "prefers TypeScript, clean architecture", category="technical")
+        remember_me("always_explain_why", "explain every architectural decision", category="rules")
+
+    Args:
+        key: Unique slug identifier (e.g. "preferred_language")
+        value: The memory content
+        category: Memory category — bio/preferences/technical/research/rules/relationship
+        tags: Optional list of searchable tags
+    """
+    from .models import UserMemory, MemoryCategory
+    try:
+        cat = MemoryCategory(category)
+    except ValueError:
+        cat = MemoryCategory.PREFERENCES
+    mem = UserMemory(key=key, value=value, category=cat, tags=tags or [])
+    _db.remember_user(mem)
+    _maybe_observe("remember_me", {"key": key, "category": category}, {"stored": True})
+    return {"stored": True, "key": key, "category": cat.value, "id": mem.id}
+
+
+@mcp.tool()
+def recall_me(
+    query: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 20,
+) -> dict:
+    """[CORE] Retrieve facts about the user via full-text search or category filter.
+
+    Use this to look up specific preferences, rules, or biographical details
+    before making decisions. Works across both local Claude Code sessions and
+    Claude.ai web sessions.
+
+    Args:
+        query: Search terms (FTS5, supports Porter stemming)
+        category: Filter by category — bio/preferences/technical/research/rules/relationship
+        limit: Maximum results to return
+    """
+    results = _db.recall_user(query=query, category=category, limit=limit)
+    return {
+        "results": results,
+        "count": len(results),
+        "query": query,
+        "category": category,
+    }
+
+
+@mcp.tool()
+def remember_this(
+    key: str,
+    value: str,
+    category: str = "protocol",
+    rationale: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+) -> dict:
+    """[CORE] Store a behavioral protocol or constraint for Claude.
+
+    This is YOUR self-knowledge — how you should behave, decisions you've made
+    about your approach, constraints you're operating under, and the "why"
+    behind your architectural choices. Persists across context resets.
+
+    Categories: protocol | constraint | decision | workflow | persona
+
+    Examples:
+        remember_this("explain_decisions", "always explain the why behind choices",
+                      category="protocol", rationale="Zack is non-technical but wants understanding")
+        remember_this("no_cloud", "keep all data local", category="constraint")
+        remember_this("tone", "collaborative partner, not a tool", category="persona")
+
+    Args:
+        key: Unique slug identifier
+        value: The protocol or constraint
+        category: Memory category — protocol/constraint/decision/workflow/persona
+        rationale: The reason behind this behavior (survives context resets)
+        tags: Optional searchable tags
+    """
+    from .models import AgentMemory, AgentMemoryCategory
+    try:
+        cat = AgentMemoryCategory(category)
+    except ValueError:
+        cat = AgentMemoryCategory.PROTOCOL
+    mem = AgentMemory(
+        key=key, value=value, category=cat,
+        rationale=rationale, tags=tags or []
+    )
+    _db.remember_agent(mem)
+    _maybe_observe("remember_this", {"key": key, "category": category}, {"stored": True})
+    return {"stored": True, "key": key, "category": cat.value, "id": mem.id}
+
+
+@mcp.tool()
+def recall_this(
+    query: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 20,
+) -> dict:
+    """[CORE] Retrieve your behavioral protocols and constraints via search.
+
+    Use this to recall how you should operate before starting work — your
+    standing rules, constraints, and the reasoning behind past decisions.
+
+    Args:
+        query: Search terms (FTS5)
+        category: Filter by — protocol/constraint/decision/workflow/persona
+        limit: Maximum results
+    """
+    results = _db.recall_agent(query=query, category=category, limit=limit)
+    return {
+        "results": results,
+        "count": len(results),
+        "query": query,
+        "category": category,
+    }
+
+
+@mcp.tool()
+def forget(key: str, memory_type: str = "user") -> dict:
+    """[COMMON] Delete a memory permanently.
+
+    Args:
+        key: The memory key to delete
+        memory_type: "user" (facts about the user) or "agent" (your protocols)
+    """
+    if memory_type == "agent":
+        deleted = _db.delete_agent_memory(key)
+    else:
+        deleted = _db.delete_user_memory(key)
+    return {"deleted": deleted, "key": key, "type": memory_type}
+
+
+@mcp.tool()
+def north_star() -> dict:
+    """[CORE] Your perfect session start — unified <500 token briefing.
+
+    Returns a single structured briefing covering everything you need to
+    operate effectively:
+
+      ## You        — who the user is, their rules and preferences
+      ## How I Work — your behavioral protocols and constraints
+      ## Active Projects — what's in progress (last 14 days)
+      ## Right Now  — most recent checkpoint state
+
+    Call this ONCE at the start of every new session. Updates automatically
+    as you add memories and checkpoints. Works identically on Claude Code
+    and Claude.ai web (via Custom Connectors).
+
+    Pair with: remember_me() and remember_this() to teach the system more.
+    """
+    lines: list[str] = []
+
+    # ---- Section 1: User identity (~100 token budget) ----
+    user_mem = _db.all_user_memory()
+    if user_mem:
+        lines.append("## You")
+        for cat in ["bio", "rules", "preferences", "technical", "research", "relationship"]:
+            entries = [m for m in user_mem if m.category == cat]
+            for m in entries[:3]:  # max 3 per category to stay token-efficient
+                lines.append(f"- **{m.key}**: {m.value}")
+
+    # ---- Section 2: Agent protocols (~100 token budget) ----
+    agent_mem = _db.all_agent_memory()
+    if agent_mem:
+        lines.append("\n## How I Work")
+        for cat in ["protocol", "constraint", "persona", "workflow", "decision"]:
+            entries = [m for m in agent_mem if m.category == cat]
+            for m in entries[:3]:
+                rationale_note = f" *(why: {m.rationale})*" if m.rationale else ""
+                lines.append(f"- **{m.key}**: {m.value}{rationale_note}")
+
+    # ---- Section 3: Active projects (~200 token budget) ----
+    try:
+        summaries = _db.recent_project_summaries(days=14)
+    except Exception:
+        summaries = []
+    if summaries:
+        lines.append("\n## Active Projects")
+        for s in summaries[:5]:
+            lines.append(
+                f"- **{s['project']}**: {s.get('current_task', 'no task')} "
+                f"({s.get('status', 'unknown')})"
+            )
+
+    # ---- Section 4: Most recent checkpoint (~100 token budget) ----
+    try:
+        all_projects = _db.list_projects()
+        if all_projects:
+            cp = _db.latest_checkpoint(all_projects[0])
+            if cp:
+                lines.append("\n## Right Now")
+                lines.append(f"**{cp.project}** — {cp.current_task}")
+                if cp.goal:
+                    lines.append(f"Goal: {cp.goal}")
+                if cp.next_steps:
+                    lines.append(f"Next: {cp.next_steps[0]}")
+                if cp.dead_ends:
+                    lines.append(f"Avoid: {cp.dead_ends[0]}")
+    except Exception:
+        pass
+
+    briefing = "\n".join(lines)
+    token_estimate = len(briefing) // 4
+
+    # Hard cap — trim if over budget
+    if token_estimate > 500:
+        briefing = briefing[:2000] + "\n*(truncated for token budget — use recall_me/recall_this for details)*"
+        token_estimate = len(briefing) // 4
+
+    if not briefing.strip():
+        briefing = "No memory stored yet. Use remember_me() and remember_this() to build your North Star."
+
+    return {
+        "briefing": briefing,
+        "token_estimate": token_estimate,
+        "user_memory_count": len(user_mem),
+        "agent_memory_count": len(agent_mem),
+        "project_count": len(summaries) if summaries else 0,
+        "tip": (
+            "Build your North Star: remember_me('name', 'your name', category='bio') "
+            "and remember_this('your_protocol', 'how you work', category='protocol')"
+            if not user_mem and not agent_mem else
+            "North Star is active. Add more with remember_me() and remember_this()."
+        ),
+    }
+
+
+# ===========================================================================
 # Sync Files — write MEMORY.md / DECISIONS.md / TASKS.md to project dir
 # ===========================================================================
 
@@ -1747,7 +2002,6 @@ def dispatch_claude(
         depends_on: Task ID that must complete before this dispatches
     """
     task_name = name or f"claude: {prompt[:55]}"
-
     # Escape the prompt for shell safety using single-quote wrapping
     safe_prompt = prompt.replace("'", "'\\''")
     command = f"claude --print -p '{safe_prompt}'"

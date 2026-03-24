@@ -586,5 +586,243 @@ def ui(port, host, no_browser):
     serve(host=host, port=port, open_browser=not no_browser)
 
 
+# ===========================================================================
+# Memory — user identity and agent protocol management
+# ===========================================================================
+
+@cli.group()
+def memory():
+    """Manage persistent user and agent memory."""
+    pass
+
+
+@memory.command("remember")
+@click.argument("value")
+@click.option("--key", "-k", default=None, help="Unique key slug (auto-generated from value if omitted)")
+@click.option("--category", "-c", default="preferences",
+              type=click.Choice(["bio", "preferences", "technical", "research", "rules", "relationship"]),
+              help="Memory category")
+@click.option("--type", "mem_type", default="user",
+              type=click.Choice(["user", "agent"]),
+              help="user = about you, agent = about Claude's behavior")
+@click.option("--rationale", "-r", default=None, help="Why this rule/protocol exists (agent memories)")
+def memory_remember(value, key, category, mem_type, rationale):
+    """Store a memory.
+
+    \b
+    Examples:
+      continuum memory remember "Zack, builds AI tools" --category bio
+      continuum memory remember "prefer TypeScript" --key ts_pref --category technical
+      continuum memory remember "always explain the why" --type agent --category protocol \\
+          --rationale "Zack is non-technical but wants to understand decisions"
+    """
+    from .db import DB
+    from .models import UserMemory, AgentMemory, MemoryCategory, AgentMemoryCategory
+    db = DB()
+    if not key:
+        # Auto-generate key from first 30 chars of value, slugified
+        key = value[:30].lower().replace(" ", "_").replace(",", "").strip("_")
+
+    if mem_type == "user":
+        try:
+            cat = MemoryCategory(category)
+        except ValueError:
+            cat = MemoryCategory.PREFERENCES
+        mem = UserMemory(key=key, value=value, category=cat)
+        db.remember_user(mem)
+        console.print(f"[green]✓[/green] Stored user memory: [bold]{key}[/bold] [{cat.value}]")
+    else:
+        try:
+            cat = AgentMemoryCategory(category)
+        except ValueError:
+            cat = AgentMemoryCategory.PROTOCOL
+        mem = AgentMemory(key=key, value=value, category=cat, rationale=rationale)
+        db.remember_agent(mem)
+        console.print(f"[green]✓[/green] Stored agent memory: [bold]{key}[/bold] [{cat.value}]")
+        if rationale:
+            console.print(f"  Rationale: {rationale}")
+
+
+@memory.command("recall")
+@click.argument("query", required=False)
+@click.option("--category", "-c", default=None, help="Filter by category")
+@click.option("--type", "mem_type", default="user",
+              type=click.Choice(["user", "agent"]),
+              help="user or agent memory")
+@click.option("--limit", "-n", default=20, help="Max results")
+def memory_recall(query, category, mem_type, limit):
+    """Search memories by keyword or list by category.
+
+    \b
+    Examples:
+      continuum memory recall "TypeScript"
+      continuum memory recall --category rules
+      continuum memory recall --type agent --category protocol
+    """
+    from .db import DB
+    db = DB()
+    if mem_type == "user":
+        results = db.recall_user(query=query, category=category, limit=limit)
+        title = "User Memory"
+    else:
+        results = db.recall_agent(query=query, category=category, limit=limit)
+        title = "Agent Memory"
+
+    if not results:
+        console.print(f"[dim]No {title.lower()} found.[/dim]")
+        return
+
+    table = Table(title=title, box=box.ROUNDED)
+    table.add_column("Key", style="bold cyan", no_wrap=True)
+    table.add_column("Value")
+    table.add_column("Category", style="dim")
+    if mem_type == "agent":
+        table.add_column("Rationale", style="dim italic")
+
+    for r in results:
+        if mem_type == "agent":
+            table.add_row(r["key"], r["value"], r["category"], r.get("rationale") or "")
+        else:
+            table.add_row(r["key"], r["value"], r["category"])
+
+    console.print(table)
+
+
+@memory.command("forget")
+@click.argument("key")
+@click.option("--type", "mem_type", default="user",
+              type=click.Choice(["user", "agent"]))
+def memory_forget(key, mem_type):
+    """Delete a memory by key.
+
+    \b
+    Example:
+      continuum memory forget ts_pref
+      continuum memory forget explain_decisions --type agent
+    """
+    from .db import DB
+    db = DB()
+    if mem_type == "user":
+        deleted = db.delete_user_memory(key)
+    else:
+        deleted = db.delete_agent_memory(key)
+
+    if deleted:
+        console.print(f"[green]✓[/green] Deleted {mem_type} memory: [bold]{key}[/bold]")
+    else:
+        console.print(f"[yellow]⚠[/yellow] Key not found: [bold]{key}[/bold]")
+
+
+@memory.command("list")
+@click.option("--type", "mem_type", default="user",
+              type=click.Choice(["user", "agent"]))
+@click.option("--category", "-c", default=None, help="Filter by category")
+def memory_list(mem_type, category):
+    """List all stored memories.
+
+    \b
+    Examples:
+      continuum memory list
+      continuum memory list --type agent
+      continuum memory list --category rules
+    """
+    from .db import DB
+    db = DB()
+    if mem_type == "user":
+        items = db.all_user_memory(category=category)
+        title = "User Memory"
+    else:
+        items = db.all_agent_memory(category=category)
+        title = "Agent Memory"
+
+    if not items:
+        console.print(f"[dim]No {title.lower()} stored yet.[/dim]")
+        console.print(
+            "\n[dim]Add some: continuum memory remember \"your info\" --category bio[/dim]"
+        )
+        return
+
+    table = Table(title=f"{title} ({len(items)} entries)", box=box.ROUNDED)
+    table.add_column("Key", style="bold cyan", no_wrap=True)
+    table.add_column("Value", max_width=60)
+    table.add_column("Category", style="dim")
+    table.add_column("Source", style="dim")
+
+    for m in items:
+        table.add_row(m.key, m.value, m.category, m.source)
+
+    console.print(table)
+
+
+# ===========================================================================
+# Remote — HTTP MCP server for Claude.ai Custom Connectors
+# ===========================================================================
+
+@cli.group()
+def remote():
+    """Manage the remote HTTP MCP server for Claude.ai Custom Connectors."""
+    pass
+
+
+@remote.command("start")
+@click.option("--port", "-p", default=8766, help="Port to bind (default: 8766)")
+@click.option("--host", "-h", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+@click.option("--token", "-t", default=None, help="Bearer token (auto-generated if omitted)")
+def remote_start(port, host, token):
+    """Start the remote MCP server (foreground).
+
+    \b
+    Then expose it publicly:
+      ngrok http <port>
+
+    Then add to Claude.ai → Settings → Custom Connectors:
+      URL:   https://xxxx.ngrok.io/mcp
+      Auth:  Bearer <token shown at startup>
+    """
+    try:
+        from .remote_server import run_remote
+    except ImportError:
+        console.print("[red]Remote server requires anyio:[/red] pip install 'continuum[remote]'")
+        raise SystemExit(1)
+    run_remote(host=host, port=port, token=token)
+
+
+@remote.command("status")
+def remote_status_cmd():
+    """Check if the remote server is running."""
+    try:
+        from .remote_server import remote_status, REMOTE_TOKEN_FILE
+        st = remote_status()
+        if st["running"]:
+            console.print(f"[green]● Remote server running[/green]  PID: {st['pid']}")
+        else:
+            console.print("[dim]○ Remote server not running[/dim]")
+        if st["token_saved"]:
+            console.print(f"  Token saved at: {REMOTE_TOKEN_FILE}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+
+
+@remote.command("token")
+@click.option("--generate", is_flag=True, help="Generate a new token")
+def remote_token_cmd(generate):
+    """Show or regenerate the remote server bearer token."""
+    try:
+        from .remote_server import generate_token, load_or_create_token, REMOTE_TOKEN_FILE
+        if generate:
+            from pathlib import Path
+            token = generate_token()
+            REMOTE_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            REMOTE_TOKEN_FILE.write_text(token)
+            console.print(f"[green]✓[/green] New token generated and saved.")
+            console.print(f"  Token: [bold]{token}[/bold]")
+        else:
+            token = load_or_create_token()
+            console.print(f"  Token: [bold]{token}[/bold]")
+            console.print(f"  File:  {REMOTE_TOKEN_FILE}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+
+
 if __name__ == "__main__":
     cli()
