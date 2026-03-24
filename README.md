@@ -99,6 +99,35 @@ Restart Claude Code. All 35+ tools load automatically.
 
 ---
 
+## Remote for Claude.ai Web
+
+Use the same memory and tools from **Claude.ai** via Custom Connectors — no second install, same DB.
+
+**3 steps:**
+
+```bash
+# 1. Start the remote server
+continuum remote start --port 8766
+
+# 2. Expose it publicly (install ngrok from ngrok.com if needed)
+ngrok http 8766
+
+# 3. Add to Claude.ai → Settings → Integrations → Add custom integration
+#    URL:   https://xxxx.ngrok.io/mcp
+#    Auth:  Bearer <token shown at startup>
+```
+
+That's it. `north_star()`, `remember_me()`, `smart_resume()` — all available on Claude.ai web instantly.
+
+```bash
+continuum remote status   # check if running
+continuum remote token    # show/regenerate your bearer token
+```
+
+> **Verify the connection:** `curl https://xxxx.ngrok.io/health` → `{"status":"ok","version":"0.1.0"}`
+
+---
+
 ## Core Features
 
 - **Auto-Observe** — every tool call silently captured as an observation; background daemon compresses batches into checkpoints automatically. No manual `checkpoint()` required.

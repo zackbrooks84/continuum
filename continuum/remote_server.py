@@ -43,9 +43,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         self._token = token
 
     async def dispatch(self, request: Request, call_next):
-        # Health check bypasses auth
+        # Health check — respond directly, no auth required
         if request.url.path in ("/health", "/"):
-            return await call_next(request)
+            return Response(
+                '{"status":"ok","version":"0.1.0","endpoint":"/mcp"}',
+                status_code=200,
+                media_type="application/json",
+            )
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:] != self._token:
             return Response(
