@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig, PatternSuggestion
+from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig, PatternSuggestion, UserMemory, AgentMemory
 
 DEFAULT_DIR = Path.home() / ".continuum"
 DEFAULT_DB  = DEFAULT_DIR / "continuum.db"
@@ -129,6 +129,47 @@ class DB:
             );
             CREATE INDEX IF NOT EXISTS idx_token_project
                 ON token_events(project, timestamp DESC);
+        """)
+        # --- Personal Memory ---
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_memory (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                category TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'cli',
+                data TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_um_key ON user_memory(key)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_um_category ON user_memory(category)"
+        )
+        self._conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS user_memory_fts
+            USING fts5(id, key, value, category, tags, tokenize='porter ascii')
+        """)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                category TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'cli',
+                data TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_am_key ON agent_memory(key)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_am_category ON agent_memory(category)"
+        )
+        self._conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts
+            USING fts5(id, key, value, category, rationale, tokenize='porter ascii')
         """)
         self._conn.commit()
 
@@ -587,6 +628,187 @@ class DB:
             self._conn.commit()
             return row["data"]
         return None
+
+    # -----------------------------------------------------------------------
+    # User Memory
+    # -----------------------------------------------------------------------
+
+    def remember_user(self, mem: UserMemory) -> None:
+        """Upsert a user memory by key."""
+        now = datetime.now(timezone.utc).isoformat()
+        data = mem.model_dump_json()
+        self._conn.execute(
+            """INSERT INTO user_memory(id, key, category, source, data, updated_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(key) DO UPDATE SET
+                   id=excluded.id, category=excluded.category,
+                   source=excluded.source, data=excluded.data,
+                   updated_at=excluded.updated_at""",
+            (mem.id, mem.key, mem.category, mem.source, data, now),
+        )
+        tags_str = " ".join(mem.tags)
+        self._conn.execute("DELETE FROM user_memory_fts WHERE id = ?", (mem.id,))
+        self._conn.execute(
+            "INSERT INTO user_memory_fts(id, key, value, category, tags) VALUES(?,?,?,?,?)",
+            (mem.id, mem.key, mem.value, mem.category, tags_str),
+        )
+        self._conn.commit()
+
+    def recall_user(
+        self,
+        query: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Search user memories via FTS or category filter."""
+        if query:
+            sql = """
+                SELECT um.data FROM user_memory um
+                JOIN user_memory_fts fts ON um.id = fts.id
+                WHERE user_memory_fts MATCH ?
+            """
+            params: list = [query]
+            if category:
+                sql += " AND um.category = ?"
+                params.append(category)
+            sql += " ORDER BY rank LIMIT ?"
+            params.append(limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        else:
+            sql = "SELECT data FROM user_memory"
+            params = []
+            if category:
+                sql += " WHERE category = ?"
+                params.append(category)
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        results = []
+        for row in rows:
+            m = UserMemory.model_validate_json(row[0])
+            results.append({"id": m.id, "key": m.key, "value": m.value,
+                            "category": m.category, "source": m.source, "tags": m.tags})
+        return results
+
+    def get_user_memory(self, key: str) -> Optional[UserMemory]:
+        row = self._conn.execute(
+            "SELECT data FROM user_memory WHERE key = ?", (key,)
+        ).fetchone()
+        return UserMemory.model_validate_json(row[0]) if row else None
+
+    def delete_user_memory(self, key: str) -> bool:
+        row = self._conn.execute(
+            "SELECT id FROM user_memory WHERE key = ?", (key,)
+        ).fetchone()
+        if not row:
+            return False
+        self._conn.execute("DELETE FROM user_memory WHERE key = ?", (key,))
+        self._conn.execute("DELETE FROM user_memory_fts WHERE id = ?", (row[0],))
+        self._conn.commit()
+        return True
+
+    def all_user_memory(self, category: Optional[str] = None) -> list[UserMemory]:
+        if category:
+            rows = self._conn.execute(
+                "SELECT data FROM user_memory WHERE category = ? ORDER BY updated_at DESC",
+                (category,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data FROM user_memory ORDER BY updated_at DESC"
+            ).fetchall()
+        return [UserMemory.model_validate_json(r[0]) for r in rows]
+
+    # -----------------------------------------------------------------------
+    # Agent Memory
+    # -----------------------------------------------------------------------
+
+    def remember_agent(self, mem: AgentMemory) -> None:
+        """Upsert an agent behavioral memory by key."""
+        now = datetime.now(timezone.utc).isoformat()
+        data = mem.model_dump_json()
+        self._conn.execute(
+            """INSERT INTO agent_memory(id, key, category, source, data, updated_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(key) DO UPDATE SET
+                   id=excluded.id, category=excluded.category,
+                   source=excluded.source, data=excluded.data,
+                   updated_at=excluded.updated_at""",
+            (mem.id, mem.key, mem.category, mem.source, data, now),
+        )
+        rationale_str = mem.rationale or ""
+        self._conn.execute("DELETE FROM agent_memory_fts WHERE id = ?", (mem.id,))
+        self._conn.execute(
+            "INSERT INTO agent_memory_fts(id, key, value, category, rationale) VALUES(?,?,?,?,?)",
+            (mem.id, mem.key, mem.value, mem.category, rationale_str),
+        )
+        self._conn.commit()
+
+    def recall_agent(
+        self,
+        query: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Search agent memories via FTS or category filter."""
+        if query:
+            sql = """
+                SELECT am.data FROM agent_memory am
+                JOIN agent_memory_fts fts ON am.id = fts.id
+                WHERE agent_memory_fts MATCH ?
+            """
+            params: list = [query]
+            if category:
+                sql += " AND am.category = ?"
+                params.append(category)
+            sql += " ORDER BY rank LIMIT ?"
+            params.append(limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        else:
+            sql = "SELECT data FROM agent_memory"
+            params = []
+            if category:
+                sql += " WHERE category = ?"
+                params.append(category)
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(limit)
+            rows = self._conn.execute(sql, params).fetchall()
+        results = []
+        for row in rows:
+            m = AgentMemory.model_validate_json(row[0])
+            results.append({"id": m.id, "key": m.key, "value": m.value,
+                            "category": m.category, "source": m.source,
+                            "rationale": m.rationale, "tags": m.tags})
+        return results
+
+    def get_agent_memory(self, key: str) -> Optional[AgentMemory]:
+        row = self._conn.execute(
+            "SELECT data FROM agent_memory WHERE key = ?", (key,)
+        ).fetchone()
+        return AgentMemory.model_validate_json(row[0]) if row else None
+
+    def delete_agent_memory(self, key: str) -> bool:
+        row = self._conn.execute(
+            "SELECT id FROM agent_memory WHERE key = ?", (key,)
+        ).fetchone()
+        if not row:
+            return False
+        self._conn.execute("DELETE FROM agent_memory WHERE key = ?", (key,))
+        self._conn.execute("DELETE FROM agent_memory_fts WHERE id = ?", (row[0],))
+        self._conn.commit()
+        return True
+
+    def all_agent_memory(self, category: Optional[str] = None) -> list[AgentMemory]:
+        if category:
+            rows = self._conn.execute(
+                "SELECT data FROM agent_memory WHERE category = ? ORDER BY updated_at DESC",
+                (category,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT data FROM agent_memory ORDER BY updated_at DESC"
+            ).fetchall()
+        return [AgentMemory.model_validate_json(r[0]) for r in rows]
 
     def close(self) -> None:
         self._conn.close()

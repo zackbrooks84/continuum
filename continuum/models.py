@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -121,3 +121,49 @@ class Handoff(BaseModel):
     immediate_action: str      # single first thing to do
     watch_out_for: list[str]  # dead ends not to repeat
     token_estimate: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Personal Memory — user identity + agent protocols
+# ---------------------------------------------------------------------------
+
+class MemoryCategory(str, Enum):
+    BIO          = "bio"
+    PREFERENCES  = "preferences"
+    TECHNICAL    = "technical"
+    RESEARCH     = "research"
+    RULES        = "rules"
+    RELATIONSHIP = "relationship"
+
+
+class UserMemory(BaseModel):
+    """A fact about the user — bio, preferences, rules, technical style."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    key: str           # unique slug, e.g. "preferred_language"
+    value: str         # the actual memory content
+    category: MemoryCategory = MemoryCategory.PREFERENCES
+    source: str = "cli"   # "cli" | "web"
+    tags: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AgentMemoryCategory(str, Enum):
+    PROTOCOL   = "protocol"
+    CONSTRAINT = "constraint"
+    DECISION   = "decision"
+    WORKFLOW   = "workflow"
+    PERSONA    = "persona"
+
+
+class AgentMemory(BaseModel):
+    """A behavioral protocol or constraint for Claude — survives context resets."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    key: str
+    value: str
+    category: AgentMemoryCategory = AgentMemoryCategory.PROTOCOL
+    rationale: Optional[str] = None   # the "why" behind this behavior
+    source: str = "cli"
+    tags: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
