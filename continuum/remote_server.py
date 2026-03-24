@@ -127,13 +127,15 @@ def run_remote(
     middleware = [Middleware(BearerAuthMiddleware, token=token)]
 
     try:
-        anyio.run(
-            mcp.run_http_async,
-            host=host,
-            port=port,
-            path="/mcp",
-            middleware=middleware,
-        )
+        async def _serve() -> None:
+            await mcp.run_http_async(
+                host=host,
+                port=port,
+                path="/mcp",
+                middleware=middleware,
+            )
+
+        anyio.run(_serve)
     finally:
         # Clean up PID file on exit
         try:

@@ -1609,14 +1609,34 @@ def north_star() -> dict:
     """
     lines: list[str] = []
 
+    from datetime import timezone as _tz
+    _now = __import__("datetime").datetime.now(_tz.utc)
+
+    def _age(ts) -> str:
+        try:
+            from datetime import datetime as _dt, timezone as _tz2
+            if isinstance(ts, str):
+                ts = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_tz2.utc)
+            d = (_now - ts).days
+            if d == 0: return "today"
+            if d == 1: return "yesterday"
+            if d < 7: return f"{d}d ago"
+            return ts.strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
     # ---- Section 1: User identity (~100 token budget) ----
     user_mem = _db.all_user_memory()
     if user_mem:
         lines.append("## You")
         for cat in ["bio", "rules", "preferences", "technical", "research", "relationship"]:
             entries = [m for m in user_mem if m.category == cat]
-            for m in entries[:3]:  # max 3 per category to stay token-efficient
-                lines.append(f"- **{m.key}**: {m.value}")
+            for m in entries[:3]:
+                age = _age(m.updated_at) if hasattr(m, "updated_at") and m.updated_at else ""
+                age_note = f" *(updated: {age})*" if age else ""
+                lines.append(f"- **{m.key}**: {m.value}{age_note}")
 
     # ---- Section 2: Agent protocols (~100 token budget) ----
     agent_mem = _db.all_agent_memory()
@@ -1626,7 +1646,9 @@ def north_star() -> dict:
             entries = [m for m in agent_mem if m.category == cat]
             for m in entries[:3]:
                 rationale_note = f" *(why: {m.rationale})*" if m.rationale else ""
-                lines.append(f"- **{m.key}**: {m.value}{rationale_note}")
+                age = _age(m.updated_at) if hasattr(m, "updated_at") and m.updated_at else ""
+                age_note = f" *(updated: {age})*" if age else ""
+                lines.append(f"- **{m.key}**: {m.value}{rationale_note}{age_note}")
 
     # ---- Section 3: Active projects (~200 token budget) ----
     try:
