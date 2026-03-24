@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import psutil
+
 CONTINUUM_DIR = Path.home() / ".continuum"
 PID_FILE = CONTINUUM_DIR / "daemon.pid"
 LOG_FILE = CONTINUUM_DIR / "daemon.log"
@@ -17,12 +19,10 @@ def start_daemon(workers: int = 2) -> None:
 
     if PID_FILE.exists():
         pid = int(PID_FILE.read_text().strip())
-        try:
-            os.kill(pid, 0)
+        if psutil.pid_exists(pid):
             print(f"Continuum daemon already running (pid {pid})")
             return
-        except (ProcessLookupError, PermissionError):
-            PID_FILE.unlink(missing_ok=True)
+        PID_FILE.unlink(missing_ok=True)  # stale pid file
 
     PID_FILE.write_text(str(os.getpid()))
 
@@ -66,11 +66,16 @@ def stop_daemon() -> None:
         print("No daemon running.")
         return
     pid = int(PID_FILE.read_text().strip())
-    try:
-        os.kill(pid, signal.SIGTERM)
-        print(f"Sent SIGTERM to pid {pid}")
+    if not psutil.pid_exists(pid):
+        print("Daemon not found (stale pid file removed)")
         PID_FILE.unlink(missing_ok=True)
-    except ProcessLookupError:
+        return
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()  # SIGTERM on Unix, TerminateProcess on Windows
+        print(f"Stopped daemon (pid {pid})")
+        PID_FILE.unlink(missing_ok=True)
+    except psutil.NoSuchProcess:
         print("Daemon not found (stale pid file removed)")
         PID_FILE.unlink(missing_ok=True)
 
@@ -79,8 +84,6 @@ def daemon_status() -> dict:
     if not PID_FILE.exists():
         return {"running": False}
     pid = int(PID_FILE.read_text().strip())
-    try:
-        os.kill(pid, 0)
+    if psutil.pid_exists(pid):
         return {"running": True, "pid": pid}
-    except (ProcessLookupError, PermissionError):
-        return {"running": False, "stale_pid": pid}
+    return {"running": False, "stale_pid": pid}
