@@ -160,7 +160,6 @@ Restart Claude Code. All 35+ tools load automatically.
 | `import_web_handoff(md_string)` | Import a handoff pasted from web/Claude.ai |
 | `cross_agent_handoff(project, target)` | Format context for GPT/Gemini/generic agents |
 | `pattern_suggestions(project)` | Surface recurring decision patterns |
-<img width="1376" height="699" alt="unnamed (2)" src="https://github.com/user-attachments/assets/f6c9da7b-8233-4d25-8c88-ed75ba6eeb96" />
 
 ---
 
