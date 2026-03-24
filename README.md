@@ -8,7 +8,8 @@
 
 > Tired of re-explaining your project every session? Continuum remembers everything, runs tasks while you sleep, and picks up exactly where you left off.
 > 
-<img width="2752" height="1451" alt="unnamed" src="https://github.com/user-attachments/assets/7d47f4b0-051e-42cb-8b4e-e0e45c9e5a85" />
+<img width="2752" height="1451" alt="unnamed (6)" src="https://github.com/user-attachments/assets/dc498ba2-3a3a-4a01-b72a-20de46ae5a79" />
+
 
 ---
 
@@ -29,7 +30,8 @@
 Almost every new session starts cold unless some form of memory is enabled. You re-explain the project, re-describe what broke, re-list what not to try. Meanwhile, long-running tasks block your context window when they could be running in the background.
 
 **Continuum fixes both.** Persistent memory across sessions. Detached task execution with auto-checkpointing. Works with Claude Code Remote Control and Dispatch out of the box.
-<img width="1376" height="711" alt="unnamed (1)" src="https://github.com/user-attachments/assets/40dac2c0-6c43-4f58-8ca5-c94f988ecf03" />
+<img width="1376" height="711" alt="unnamed (1) (1)" src="https://github.com/user-attachments/assets/6fa3e1aa-3370-48af-aea5-95951e25fa3b" />
+
 
 ---
 
