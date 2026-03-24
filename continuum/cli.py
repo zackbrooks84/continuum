@@ -8,12 +8,18 @@ from typing import Optional
 
 import click
 from rich.console import Console
+
+# Ensure UTF-8 output on Windows terminals that default to CP1252
+if sys.platform == "win32":
+    import io as _io
+    sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 from rich.table import Table
 from rich import box
 from rich.panel import Panel
 from rich.text import Text
 
-console = Console()
+console = Console(legacy_windows=False, highlight=False)
 
 
 def _db():
