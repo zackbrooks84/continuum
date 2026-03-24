@@ -90,7 +90,7 @@ Or with plain Python:
 }
 ```
 
-Restart Claude Code. All 29 tools load automatically.
+Restart Claude Code. All 35+ tools load automatically.
 
 ---
 
@@ -105,6 +105,8 @@ Restart Claude Code. All 29 tools load automatically.
 - **Claude Dispatch** — queue headless `claude --print` sessions as background tasks. Claude works autonomously while you're away; output becomes a checkpoint automatically.
 - **Pattern Learning** — after 5+ similar decisions, surfaces a suggested tag and standing rule via `pattern_suggestions()`. The agent learns your habits.
 - **Cross-Agent Handoffs** — `cross_agent_handoff(project, target_agent="gpt")` exports context formatted for ChatGPT, Gemini, or any other agent.
+- **Personal AI OS** — `north_star()` returns a unified <500 token briefing: who you are, how Claude works with you, active projects, current state. `remember_me()` and `remember_this()` teach the system your preferences and rules — persists forever.
+- **Claude.ai Web Bridge** — remote HTTP server with bearer auth bridges your local DB to Claude.ai Custom Connectors. Same memory, same tools, both interfaces.
 
 ---
 
@@ -131,6 +133,16 @@ Restart Claude Code. All 29 tools load automatically.
 | `memory_timeline(checkpoint_id)` | Chronological slice around a checkpoint |
 | `memory_get(ids)` | Full detail for specific checkpoint IDs |
 | `sync_files(project, output_dir)` | Write MEMORY/DECISIONS/TASKS.md to project dir |
+
+### Personal AI OS
+| Tool | Description |
+|------|-------------|
+| `north_star()` | **[CORE]** Unified <500 token session briefing — who you are + how Claude works + active projects |
+| `remember_me(key, value, category)` | Store a fact about you — bio, preferences, rules, technical style |
+| `recall_me(query, category)` | Retrieve your facts via FTS search or category filter |
+| `remember_this(key, value, category)` | Store a behavioral protocol or constraint for Claude |
+| `recall_this(query)` | Retrieve Claude's protocols |
+| `forget(key, memory_type)` | Delete a memory permanently |
 
 ### Automation & Extras
 | Tool | Description |
@@ -190,27 +202,29 @@ continuum daemon status
 
 ## Architecture
 
-One SQLite database at `~/.continuum/continuum.db`. A background daemon handles task execution, observation compression, and notification dispatch. The MCP server exposes all 29 tools over stdio. No cloud, no accounts — everything stays on your machine.
+One SQLite database at `~/.continuum/continuum.db`. A background daemon handles task execution, observation compression, and notification dispatch. The MCP server exposes all 35+ tools over stdio. A remote HTTP server bridges your local DB to Claude.ai Custom Connectors. No cloud, no accounts — everything stays on your machine.
 
 ```
 continuum/
-├── models.py       # Pydantic models: Task, Checkpoint, Decision, Handoff
-├── db.py           # SQLite store with FTS5 full-text search
-├── runner.py       # Task executor with auto-checkpoint + notifications
-├── daemon.py       # Background process: task runner + observer thread
-├── observer.py     # Passive capture + rule/Claude Haiku compression
-├── handoff.py      # Compact briefing generator
-├── sync_files.py   # Renders MEMORY.md / DECISIONS.md / TASKS.md
-├── notify.py       # Telegram, Discord, Slack, webhook dispatcher
-├── mcp_server.py   # FastMCP server — all 29 tools
-└── cli.py          # Click CLI
+├── models.py         # Pydantic: Task, Checkpoint, Handoff, UserMemory, AgentMemory, Decision
+├── db.py             # SQLite + FTS5 full-text search + user/agent memory tables
+├── runner.py         # Task executor with auto-checkpoint + notifications
+├── daemon.py         # Background process: task runner + observer thread
+├── observer.py       # Passive capture + rule/Claude Haiku compression
+├── handoff.py        # Compact briefing generator
+├── sync_files.py     # Renders MEMORY.md / DECISIONS.md / TASKS.md
+├── notify.py         # Telegram, Discord, Slack, webhook dispatcher
+├── remote_server.py  # HTTP remote server for Claude.ai Custom Connectors
+├── mcp_server.py     # FastMCP server — all 35+ tools
+├── ui/server.py      # Local web dashboard (continuum ui)
+└── cli.py            # Click CLI
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] **Web UI** — local dashboard for task queue + checkpoint browser
+- [x] **Web UI** — local dashboard: `continuum ui` → opens at `http://localhost:8765`
 - [ ] **Team sync** — optional encrypted checkpoint sharing across machines
 - [ ] **Plugin hooks** — custom compression and notification handlers
 
