@@ -9,11 +9,16 @@ from typing import Optional
 import click
 from rich.console import Console
 
-# Ensure UTF-8 output on Windows terminals that default to CP1252
+# Ensure UTF-8 output and ANSI color support on Windows
 if sys.platform == "win32":
     import io as _io
+    import ctypes
     sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    try:  # Enable ANSI escape processing in CMD and PowerShell
+        ctypes.windll.kernel32.SetConsoleMode(ctypes.windll.kernel32.GetStdHandle(-11), 7)
+    except Exception:
+        pass
 from rich.table import Table
 from rich import box
 from rich.panel import Panel
