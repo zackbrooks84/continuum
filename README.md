@@ -232,6 +232,46 @@ continuum daemon status
 
 ---
 
+## Benchmarking
+
+Install dev dependencies (including `pytest-benchmark`):
+
+```bash
+python -m pip install -e ".[dev]" pytest-benchmark
+```
+
+Run benchmark-only suite:
+
+```bash
+pytest tests/test_benchmark_mcp.py --benchmark-only
+```
+
+Sort benchmark output by mean latency:
+
+```bash
+pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-sort=mean
+```
+
+Autosave a baseline run for future comparisons:
+
+```bash
+pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-autosave
+```
+
+Compare against saved baselines (example):
+
+```bash
+pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-compare
+```
+
+How to read results:
+
+- **mean**: average latency across all benchmark rounds; useful for overall cost.
+- **median**: middle latency; less sensitive to occasional outliers.
+- **stddev**: variability; lower values generally indicate more stable timing.
+
+---
+
 ## Architecture
 
 One SQLite database at `~/.continuum/continuum.db`. A background daemon handles task execution, observation compression, and notification dispatch. The MCP server exposes all 35+ tools over stdio. A remote HTTP server bridges your local DB to Claude.ai Custom Connectors. No cloud, no accounts — everything stays on your machine.
