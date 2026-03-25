@@ -702,7 +702,8 @@ def history(
     return {
         "checkpoints": [
             {
-                "id": cp.id[:8],
+                "id": cp.id,
+                "short_id": cp.id[:8],
                 "project": cp.project,
                 "task": cp.current_task,
                 "status": cp.status,
