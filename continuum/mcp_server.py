@@ -85,6 +85,7 @@ Environment variables:
 from __future__ import annotations
 
 import os
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from statistics import mean
@@ -114,6 +115,8 @@ _observe_method: str = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
 _auto_mode_active: bool = bool(os.environ.get("CONTINUUM_AUTO_MODE"))
 _post_write_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="continuum-postwrite")
 _checkpoint_timings: list[dict[str, float]] = []
+_forge_push_timings: list[dict[str, float]] = []
+_profile_forge_push: bool = bool(os.environ.get("CONTINUUM_PROFILE_FORGE_PUSH"))
 
 
 def _maybe_sync(project: str) -> None:
@@ -186,6 +189,32 @@ def checkpoint_timing_snapshot(reset: bool = False) -> dict:
     snapshot = {"count": len(_checkpoint_timings), "stages": stages}
     if reset:
         _checkpoint_timings.clear()
+    return snapshot
+
+
+def forge_push_timing_snapshot(reset: bool = False) -> dict:
+    """Return aggregated timing stats for recent forge_push() calls."""
+    if not _forge_push_timings:
+        return {"count": 0, "stages": {}}
+    keys = _forge_push_timings[0].keys()
+    stages: dict[str, dict[str, float]] = {}
+    for key in keys:
+        values = [row[key] for row in _forge_push_timings]
+        values_sorted = sorted(values)
+        mid = len(values_sorted) // 2
+        if len(values_sorted) % 2:
+            median = values_sorted[mid]
+        else:
+            median = (values_sorted[mid - 1] + values_sorted[mid]) / 2
+        stages[key] = {
+            "mean_ms": mean(values) * 1000.0,
+            "median_ms": median * 1000.0,
+            "min_ms": values_sorted[0] * 1000.0,
+            "max_ms": values_sorted[-1] * 1000.0,
+        }
+    snapshot = {"count": len(_forge_push_timings), "stages": stages}
+    if reset:
+        _forge_push_timings.clear()
     return snapshot
 
 
@@ -327,8 +356,10 @@ def forge_push(
         tags: Optional labels for filtering
         dry_run: If True, preview the task without queuing it
     """
-    import os
+    total_start = perf_counter() if _profile_forge_push else 0.0
+    validation_start = total_start
     safe_mode = os.environ.get("CONTINUUM_SAFE_MODE", "").lower()
+    validation_elapsed = (perf_counter() - validation_start) if _profile_forge_push else 0.0
 
     if dry_run:
         return {
@@ -347,27 +378,37 @@ def forge_push(
 
     # Determine initial status based on safe mode
     from .models import TaskStatus
-    initial_status = TaskStatus.PENDING
-    if safe_mode == "confirm":
-        initial_status = TaskStatus("pending_confirm") if hasattr(TaskStatus, "PENDING_CONFIRM") else TaskStatus.PENDING
+    status = TaskStatus.WAITING if safe_mode == "confirm" else TaskStatus.PENDING
 
-    task = Task(
+    task_create_start = perf_counter() if _profile_forge_push else 0.0
+    now = datetime.now(timezone.utc)
+    task = Task.model_construct(
+        id=str(uuid.uuid4())[:8],
         name=name,
         command=command,
         cwd=cwd,
-        project=project,
-        auto_checkpoint=auto_checkpoint,
+        env={},
+        status=status,
         priority=priority,
         depends_on=depends_on,
+        project=project,
+        auto_checkpoint=auto_checkpoint,
+        created_at=now,
+        started_at=None,
+        finished_at=None,
         timeout=timeout,
         min_free_ram_mb=min_free_ram_mb,
-        tags=tags or [],
+        tags=list(tags or []),
     )
+    task_create_elapsed = (perf_counter() - task_create_start) if _profile_forge_push else 0.0
 
-    # Override status for confirm mode
+    db_start = perf_counter() if _profile_forge_push else 0.0
+    _db.push_task(task)
+    db_elapsed = (perf_counter() - db_start) if _profile_forge_push else 0.0
+    db_timing = (_db.latest_push_task_timing() or {}) if _profile_forge_push else {}
+    lock_elapsed = float(db_timing.get("lock_wait_s", 0.0)) if _profile_forge_push else 0.0
+
     if safe_mode == "confirm":
-        task.status = TaskStatus.WAITING  # daemon skips WAITING unless unblocked
-        _db.push_task(task)
         result = {
             "task_id": task.id,
             "name": task.name,
@@ -378,7 +419,6 @@ def forge_push(
             "ui_approve": f"http://localhost:8765/tasks/{task.id}/approve",
         }
     else:
-        _db.push_task(task)
         result = {
             "task_id": task.id,
             "name": task.name,
@@ -387,7 +427,19 @@ def forge_push(
             "tip": "Start the daemon with: continuum daemon start",
         }
 
+    side_effect_start = perf_counter() if _profile_forge_push else 0.0
     _maybe_observe("forge_push", {"name": name, "command": command, "project": project}, result)
+    if _profile_forge_push:
+        side_effect_elapsed = perf_counter() - side_effect_start
+        total_elapsed = perf_counter() - total_start
+        _forge_push_timings.append({
+            "input_validation_s": validation_elapsed,
+            "task_object_creation_s": task_create_elapsed,
+            "db_insert_commit_s": db_elapsed,
+            "lock_acquisition_s": lock_elapsed,
+            "sync_side_effects_s": side_effect_elapsed,
+            "total_s": total_elapsed,
+        })
     return result
 
 
