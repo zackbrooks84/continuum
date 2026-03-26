@@ -5,6 +5,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Optional
 
 from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig, PatternSuggestion, UserMemory, AgentMemory
@@ -28,6 +29,7 @@ class DB:
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._last_checkpoint_timing: Optional[dict[str, float]] = None
         self._migrate()
 
     # ------------------------------------------------------------------
@@ -273,19 +275,36 @@ class DB:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, cp: Checkpoint) -> Checkpoint:
+        serialize_start = perf_counter()
+        cp_json = cp.model_dump_json()
+        findings_text = " ".join(cp.findings + cp.dead_ends + cp.next_steps)
+        serialize_elapsed = perf_counter() - serialize_start
+
+        sql_start = perf_counter()
         self._conn.execute(
             "INSERT OR REPLACE INTO checkpoints(id, project, timestamp, data) VALUES (?,?,?,?)",
-            (cp.id, cp.project, cp.timestamp.isoformat(), cp.model_dump_json())
+            (cp.id, cp.project, cp.timestamp.isoformat(), cp_json)
         )
         # Keep FTS index in sync
-        findings_text = " ".join(cp.findings + cp.dead_ends + cp.next_steps)
         self._conn.execute(
             "INSERT OR REPLACE INTO checkpoints_fts(id, project, current_task, goal, context, findings_text)"
             " VALUES (?,?,?,?,?,?)",
             (cp.id, cp.project, cp.current_task, cp.goal, cp.context, findings_text)
         )
+        sql_elapsed = perf_counter() - sql_start
+
+        commit_start = perf_counter()
         self._conn.commit()
+        commit_elapsed = perf_counter() - commit_start
+        self._last_checkpoint_timing = {
+            "serialization_s": serialize_elapsed,
+            "sql_execute_s": sql_elapsed,
+            "commit_s": commit_elapsed,
+        }
         return cp
+
+    def latest_checkpoint_timing(self) -> Optional[dict[str, float]]:
+        return self._last_checkpoint_timing
 
     def get_checkpoint(self, checkpoint_id: str) -> Optional[Checkpoint]:
         row = self._conn.execute(
