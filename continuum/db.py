@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Optional
+import os
 
 from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig, PatternSuggestion, UserMemory, AgentMemory
 
@@ -29,7 +30,10 @@ class DB:
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._profile_push_task = bool(os.environ.get("CONTINUUM_PROFILE_FORGE_PUSH"))
         self._last_checkpoint_timing: Optional[dict[str, float]] = None
+        self._last_push_task_timing: Optional[dict[str, float]] = None
         self._migrate()
 
     # ------------------------------------------------------------------
@@ -180,13 +184,41 @@ class DB:
     # ------------------------------------------------------------------
 
     def push_task(self, task: Task) -> Task:
+        if not self._profile_push_task:
+            self._conn.execute(
+                "INSERT INTO tasks (id, data, status, priority, created_at) VALUES (?,?,?,?,?)",
+                (task.id, task.model_dump_json(), task.status.value,
+                 task.priority, task.created_at.isoformat())
+            )
+            self._conn.commit()
+            return task
+
+        serialize_start = perf_counter()
+        task_json = task.model_dump_json()
+        created_at = task.created_at.isoformat()
+        serialize_elapsed = perf_counter() - serialize_start
+
+        sql_start = perf_counter()
         self._conn.execute(
             "INSERT INTO tasks (id, data, status, priority, created_at) VALUES (?,?,?,?,?)",
-            (task.id, task.model_dump_json(), task.status.value,
-             task.priority, task.created_at.isoformat())
+            (task.id, task_json, task.status.value, task.priority, created_at)
         )
+        sql_elapsed = perf_counter() - sql_start
+
+        commit_start = perf_counter()
         self._conn.commit()
+        commit_elapsed = perf_counter() - commit_start
+
+        self._last_push_task_timing = {
+            "serialization_s": serialize_elapsed,
+            "lock_wait_s": 0.0,
+            "sql_execute_s": sql_elapsed,
+            "commit_s": commit_elapsed,
+        }
         return task
+
+    def latest_push_task_timing(self) -> Optional[dict[str, float]]:
+        return self._last_push_task_timing
 
     def pop_next_task(self) -> Optional[Task]:
         """Atomically claim the next runnable pending task."""
