@@ -85,7 +85,10 @@ Environment variables:
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from statistics import mean
+from time import perf_counter
 from typing import Any, List, Optional
 
 from fastmcp import FastMCP
@@ -109,6 +112,8 @@ _auto_observe: bool = bool(os.environ.get("CONTINUUM_AUTO_OBSERVE"))
 _observe_project: Optional[str] = os.environ.get("CONTINUUM_OBSERVE_PROJECT")
 _observe_method: str = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
 _auto_mode_active: bool = bool(os.environ.get("CONTINUUM_AUTO_MODE"))
+_post_write_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="continuum-postwrite")
+_checkpoint_timings: list[dict[str, float]] = []
 
 
 def _maybe_sync(project: str) -> None:
@@ -148,6 +153,40 @@ def _maybe_observe(tool_name: str, kwargs: dict, result: Any) -> None:
         _db.save_observation(proj, tool_name, summary)
     except Exception:
         pass
+
+
+def _post_checkpoint_side_effects(project: str, task: str, status: str, result: dict) -> None:
+    _maybe_sync(project)
+    _maybe_observe("checkpoint", {"project": project, "task": task, "status": status}, result)
+
+
+def checkpoint_timing_snapshot(reset: bool = False) -> dict:
+    """Return aggregated timing stats for recent checkpoint() calls.
+
+    Intended for internal benchmarking and debugging.
+    """
+    if not _checkpoint_timings:
+        return {"count": 0, "stages": {}}
+    keys = _checkpoint_timings[0].keys()
+    stages: dict[str, dict[str, float]] = {}
+    for key in keys:
+        values = [row[key] for row in _checkpoint_timings]
+        values_sorted = sorted(values)
+        mid = len(values_sorted) // 2
+        if len(values_sorted) % 2:
+            median = values_sorted[mid]
+        else:
+            median = (values_sorted[mid - 1] + values_sorted[mid]) / 2
+        stages[key] = {
+            "mean_ms": mean(values) * 1000.0,
+            "median_ms": median * 1000.0,
+            "min_ms": values_sorted[0] * 1000.0,
+            "max_ms": values_sorted[-1] * 1000.0,
+        }
+    snapshot = {"count": len(_checkpoint_timings), "stages": stages}
+    if reset:
+        _checkpoint_timings.clear()
+    return snapshot
 
 
 # ===========================================================================
@@ -577,6 +616,7 @@ def checkpoint(
         decisions: List of {what, why, alternatives_rejected} dicts
         agent: Your agent identifier (e.g. 'claude-sonnet-4-6')
     """
+    validate_start = perf_counter()
     parsed_decisions = [
         Decision(
             what=d.get("what", ""),
@@ -600,15 +640,30 @@ def checkpoint(
         files_changed=files_changed or [],
         agent=agent,
     )
+    validate_elapsed = perf_counter() - validate_start
+
+    save_start = perf_counter()
     _db.save_checkpoint(cp)
+    save_elapsed = perf_counter() - save_start
+    db_timing = _db.latest_checkpoint_timing() or {}
     result = {
         "checkpoint_id": cp.id,
         "project": cp.project,
         "saved_at": cp.timestamp.isoformat(),
         "message": f"Checkpoint saved for '{project}'. Resume with: continuum resume {project}",
     }
-    _maybe_sync(project)
-    _maybe_observe("checkpoint", {"project": project, "task": task, "status": status}, result)
+
+    side_effect_start = perf_counter()
+    _post_write_executor.submit(_post_checkpoint_side_effects, project, task, status, result)
+    side_effect_elapsed = perf_counter() - side_effect_start
+    _checkpoint_timings.append({
+        "model_validation_s": validate_elapsed,
+        "serialization_s": db_timing.get("serialization_s", 0.0),
+        "sql_execute_s": db_timing.get("sql_execute_s", 0.0),
+        "commit_s": db_timing.get("commit_s", 0.0),
+        "save_checkpoint_total_s": save_elapsed,
+        "post_write_enqueue_s": side_effect_elapsed,
+    })
     return result
 
 
