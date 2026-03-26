@@ -8,11 +8,18 @@ from pathlib import Path
 from time import perf_counter
 from typing import Optional
 import os
+import logging
+import threading
 
 from .models import Task, TaskResult, TaskStatus, Checkpoint, Handoff, ProjectConfig, PatternSuggestion, UserMemory, AgentMemory
 
 DEFAULT_DIR = Path.home() / ".continuum"
 DEFAULT_DB  = DEFAULT_DIR / "continuum.db"
+logger = logging.getLogger(__name__)
+
+
+class CheckpointDataIntegrityError(RuntimeError):
+    """Raised when checkpoint rows contain missing or invalid JSON payloads."""
 
 
 def get_db_path() -> Path:
@@ -29,6 +36,7 @@ class DB:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._profile_push_task = bool(os.environ.get("CONTINUUM_PROFILE_FORGE_PUSH"))
@@ -309,24 +317,29 @@ class DB:
     def save_checkpoint(self, cp: Checkpoint) -> Checkpoint:
         serialize_start = perf_counter()
         cp_json = cp.model_dump_json()
+        if not cp_json:
+            raise CheckpointDataIntegrityError(
+                f"Checkpoint {cp.id} for project {cp.project} serialized to empty JSON payload."
+            )
         findings_text = " ".join(cp.findings + cp.dead_ends + cp.next_steps)
         serialize_elapsed = perf_counter() - serialize_start
 
         sql_start = perf_counter()
-        self._conn.execute(
-            "INSERT OR REPLACE INTO checkpoints(id, project, timestamp, data) VALUES (?,?,?,?)",
-            (cp.id, cp.project, cp.timestamp.isoformat(), cp_json)
-        )
-        # Keep FTS index in sync
-        self._conn.execute(
-            "INSERT OR REPLACE INTO checkpoints_fts(id, project, current_task, goal, context, findings_text)"
-            " VALUES (?,?,?,?,?,?)",
-            (cp.id, cp.project, cp.current_task, cp.goal, cp.context, findings_text)
-        )
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO checkpoints(id, project, timestamp, data) VALUES (?,?,?,?)",
+                (cp.id, cp.project, cp.timestamp.isoformat(), cp_json)
+            )
+            # Keep FTS index in sync
+            self._conn.execute(
+                "INSERT OR REPLACE INTO checkpoints_fts(id, project, current_task, goal, context, findings_text)"
+                " VALUES (?,?,?,?,?,?)",
+                (cp.id, cp.project, cp.current_task, cp.goal, cp.context, findings_text)
+            )
+            commit_start = perf_counter()
+            self._conn.commit()
         sql_elapsed = perf_counter() - sql_start
 
-        commit_start = perf_counter()
-        self._conn.commit()
         commit_elapsed = perf_counter() - commit_start
         self._last_checkpoint_timing = {
             "serialization_s": serialize_elapsed,
@@ -351,18 +364,49 @@ class DB:
         ).fetchone()
         return Checkpoint.model_validate_json(row["data"]) if row else None
 
-    def list_checkpoints(self, project: Optional[str] = None, limit: int = 20) -> list[Checkpoint]:
+    def list_checkpoints(
+        self,
+        project: Optional[str] = None,
+        limit: int = 20,
+        strict: Optional[bool] = None,
+    ) -> list[Checkpoint]:
+        if strict is None:
+            strict = bool(os.environ.get("PYTEST_CURRENT_TEST"))
         if project:
             rows = self._conn.execute(
-                "SELECT data FROM checkpoints WHERE project=? ORDER BY timestamp DESC LIMIT ?",
+                "SELECT id, project, timestamp, data FROM checkpoints WHERE project=? ORDER BY timestamp DESC LIMIT ?",
                 (project, limit)
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT data FROM checkpoints ORDER BY timestamp DESC LIMIT ?",
+                "SELECT id, project, timestamp, data FROM checkpoints ORDER BY timestamp DESC LIMIT ?",
                 (limit,)
             ).fetchall()
-        return [Checkpoint.model_validate_json(r["data"]) for r in rows]
+        checkpoints: list[Checkpoint] = []
+        invalid_rows: list[str] = []
+        for r in rows:
+            cp_id = r["id"] or "<missing-id>"
+            cp_project = r["project"] or "<missing-project>"
+            cp_timestamp = r["timestamp"] or "<missing-timestamp>"
+            raw = r["data"]
+            if raw is None:
+                invalid_rows.append(
+                    f"id={cp_id} project={cp_project} timestamp={cp_timestamp} reason=data is NULL"
+                )
+                continue
+            try:
+                checkpoints.append(Checkpoint.model_validate_json(raw))
+            except Exception as exc:
+                invalid_rows.append(
+                    f"id={cp_id} project={cp_project} timestamp={cp_timestamp} reason={exc}"
+                )
+
+        if invalid_rows:
+            msg = "Invalid checkpoint rows detected:\n" + "\n".join(invalid_rows)
+            if strict:
+                raise CheckpointDataIntegrityError(msg)
+            logger.error(msg)
+        return checkpoints
 
     def list_projects(self) -> list[str]:
         rows = self._conn.execute(

@@ -86,7 +86,6 @@ from __future__ import annotations
 
 import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from statistics import mean
 from time import perf_counter
@@ -113,7 +112,6 @@ _auto_observe: bool = bool(os.environ.get("CONTINUUM_AUTO_OBSERVE"))
 _observe_project: Optional[str] = os.environ.get("CONTINUUM_OBSERVE_PROJECT")
 _observe_method: str = os.environ.get("CONTINUUM_OBSERVE_METHOD", "rule")
 _auto_mode_active: bool = bool(os.environ.get("CONTINUUM_AUTO_MODE"))
-_post_write_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="continuum-postwrite")
 _checkpoint_timings: list[dict[str, float]] = []
 _forge_push_timings: list[dict[str, float]] = []
 _profile_forge_push: bool = bool(os.environ.get("CONTINUUM_PROFILE_FORGE_PUSH"))
@@ -706,7 +704,7 @@ def checkpoint(
     }
 
     side_effect_start = perf_counter()
-    _post_write_executor.submit(_post_checkpoint_side_effects, project, task, status, result)
+    _post_checkpoint_side_effects(project, task, status, result)
     side_effect_elapsed = perf_counter() - side_effect_start
     _checkpoint_timings.append({
         "model_validation_s": validate_elapsed,
