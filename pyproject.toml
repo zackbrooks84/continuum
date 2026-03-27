@@ -42,3 +42,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.pytest.benchmark]
+autosave = true
+sort = "mean"
