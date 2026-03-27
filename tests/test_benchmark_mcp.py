@@ -18,6 +18,7 @@ DATASET_SIZES = {
 
 def _reload_mcp(monkeypatch: pytest.MonkeyPatch, db_path: Path):
     monkeypatch.setenv("CONTINUUM_DB", str(db_path))
+    monkeypatch.setenv("CONTINUUM_NO_SYNC", "1")  # isolate from disk IO side effects
 
     import continuum.db as db_module
     import continuum.mcp_server as mcp_module

@@ -858,7 +858,7 @@ def north_star_cmd(hook_mode, project):
     if user_mems:
         lines.append("### Who I Am")
         for m in user_mems:
-            lines.append(f"- **{m['key']}** ({m['category']}): {m['value']}")
+            lines.append(f"- **{m.key}** ({m.category}): {m.value}")
         lines.append("")
 
     # Agent protocol
@@ -866,7 +866,7 @@ def north_star_cmd(hook_mode, project):
     if agent_mems:
         lines.append("### How We Work Together")
         for m in agent_mems:
-            lines.append(f"- **{m['key']}** ({m['category']}): {m['value']}")
+            lines.append(f"- **{m.key}** ({m.category}): {m.value}")
         lines.append("")
 
     # Latest project checkpoint
@@ -886,7 +886,7 @@ def north_star_cmd(hook_mode, project):
     if summaries and not project:
         lines.append("### Active Projects")
         for s in summaries[:5]:
-            lines.append(f"- **{s['project']}**: {s['current_task'] or 'no task'} ({s['status'] or '?'})")
+            lines.append(f"- **{s['project']}**: {s.get('task') or s.get('current_task') or 'no task'} ({s.get('status') or '?'})")
         lines.append("")
 
     if len(lines) == 1:

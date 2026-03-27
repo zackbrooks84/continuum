@@ -315,13 +315,28 @@ class DB:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, cp: Checkpoint) -> Checkpoint:
-        serialize_start = perf_counter()
         cp_json = cp.model_dump_json()
         if not cp_json:
             raise CheckpointDataIntegrityError(
                 f"Checkpoint {cp.id} for project {cp.project} serialized to empty JSON payload."
             )
         findings_text = " ".join(cp.findings + cp.dead_ends + cp.next_steps)
+
+        if not self._profile_push_task:
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO checkpoints(id, project, timestamp, data) VALUES (?,?,?,?)",
+                    (cp.id, cp.project, cp.timestamp.isoformat(), cp_json)
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO checkpoints_fts(id, project, current_task, goal, context, findings_text)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (cp.id, cp.project, cp.current_task, cp.goal, cp.context, findings_text)
+                )
+                self._conn.commit()
+            return cp
+
+        serialize_start = perf_counter()
         serialize_elapsed = perf_counter() - serialize_start
 
         sql_start = perf_counter()
@@ -338,9 +353,9 @@ class DB:
             )
             commit_start = perf_counter()
             self._conn.commit()
-        sql_elapsed = perf_counter() - sql_start
+            commit_elapsed = perf_counter() - commit_start
+        sql_elapsed = perf_counter() - sql_start - commit_elapsed
 
-        commit_elapsed = perf_counter() - commit_start
         self._last_checkpoint_timing = {
             "serialization_s": serialize_elapsed,
             "sql_execute_s": sql_elapsed,

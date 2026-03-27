@@ -122,7 +122,11 @@ def _maybe_sync(project: str) -> None:
 
     Uses the configured output_dir if set; otherwise falls back to
     ~/.continuum/projects/{project}/ so auto-sync always runs — no config step required.
+
+    Set CONTINUUM_NO_SYNC=1 to disable all sync (useful in tests/benchmarks).
     """
+    if os.environ.get("CONTINUUM_NO_SYNC"):
+        return
     try:
         from .sync_files import sync_project_files
         cp = _db.latest_checkpoint(project)

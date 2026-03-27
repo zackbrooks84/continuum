@@ -22,3 +22,8 @@ env/
 .mypy_cache/
 .ruff_cache/
 uv.lock
+
+# Benchmark artifacts (machine-specific timing data)
+.benchmarks/
+benchmark-results.json
+.test-results/

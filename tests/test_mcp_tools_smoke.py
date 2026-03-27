@@ -33,9 +33,12 @@ def test_mcp_tools_smoke(tmp_path, monkeypatch):
     assert mcp.forge_status(task_id=task_id)["id"] == task_id
     assert "status" in mcp.forge_result(task_id=task_id)
     assert isinstance(mcp.forge_list(), list)
-    assert mcp.forge_cancel(task_id=task_id)["cancelled"] is True
     assert mcp.forge_approve(task_id=task_id)["approved"] is True
     assert mcp.forge_run_now(task_id=task_id)["success"] is True
+
+    # cancel a separate task so we test cancel without polluting the run_now flow
+    cancel_task_id = mcp.forge_push(name="to-cancel", command="echo bye", project="auditproj")["task_id"]
+    assert mcp.forge_cancel(task_id=cancel_task_id)["cancelled"] is True
     assert mcp.safe_mode(level="off")["safe_mode"] == "off"
 
     assert mcp.handoff(project="auditproj")

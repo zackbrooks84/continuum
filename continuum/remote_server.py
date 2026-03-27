@@ -100,6 +100,8 @@ class OAuthMiddleware:
         headers = {k.lower(): v for k, v in headers_raw}
         auth = headers.get(b"authorization", b"").decode("utf-8", errors="replace")
 
+        print(f"[DEBUG] POST {path}: auth_header={auth[:30] if auth else 'NONE'}..., expected_token={self._token[:20]}...")
+
         if not auth.startswith("Bearer ") or auth[7:] != self._token:
             host   = headers.get(b"host",              b"localhost").decode()
             scheme = headers.get(b"x-forwarded-proto", b"http").decode()
@@ -199,6 +201,7 @@ class OAuthMiddleware:
         params       = dict(request.query_params)
         redirect_uri = params.get("redirect_uri", "")
         state        = params.get("state", "")
+        print(f"[DEBUG] authorize: redirect_uri={redirect_uri}, state={state[:20] if state else '?'}")
 
         code = secrets.token_urlsafe(32)
         self._auth_codes[code] = {
