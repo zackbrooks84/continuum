@@ -107,12 +107,12 @@ Use the same memory and tools from **Claude.ai** via Custom Connectors — no se
 # 1. Start the remote server
 continuum remote start --port 8766
 
-# 2. Expose it publicly (install ngrok from ngrok.com if needed)
-ngrok http 8766
+# 2. Expose it publicly with Cloudflare Tunnel (free, no interstitial)
+cloudflared tunnel --url http://localhost:8766
 
 # 3. Add to Claude.ai → Settings → Integrations → Add custom integration
-#    URL:   https://xxxx.ngrok.io/mcp
-#    Auth:  Bearer <token shown at startup>
+#    URL:   https://xxxx.trycloudflare.com/mcp
+#    (leave OAuth fields blank — handled automatically)
 ```
 
 That's it. `north_star()`, `remember_me()`, `smart_resume()` — all available on Claude.ai web instantly.
@@ -122,7 +122,9 @@ continuum remote status   # check if running
 continuum remote token    # show/regenerate your bearer token
 ```
 
-> **Verify the connection:** `curl https://xxxx.ngrok.io/health` → `{"status":"ok","version":"0.1.0"}`
+> **Verify the connection:** `curl https://xxxx.trycloudflare.com/health` → `{"status":"ok","version":"0.1.0"}`
+>
+> **Note:** The tunnel URL changes on each restart. For a stable URL, use a named Cloudflare tunnel with a fixed subdomain.
 
 ---
 
@@ -240,25 +242,13 @@ Install dev dependencies (including `pytest-benchmark`):
 python -m pip install -e ".[dev]" pytest-benchmark
 ```
 
-Run benchmark-only suite:
+Run benchmarks (saves results automatically, sorted by mean):
 
 ```bash
-pytest tests/test_benchmark_mcp.py --benchmark-only
+pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-autosave --benchmark-sort=mean
 ```
 
-Sort benchmark output by mean latency:
-
-```bash
-pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-sort=mean
-```
-
-Autosave a baseline run for future comparisons:
-
-```bash
-pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-autosave
-```
-
-Compare against saved baselines (example):
+Compare against a saved baseline:
 
 ```bash
 pytest tests/test_benchmark_mcp.py --benchmark-only --benchmark-compare
