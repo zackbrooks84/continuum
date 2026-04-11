@@ -341,11 +341,12 @@ def run_remote_with_tunnel(
                 m = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', line)
                 if m:
                     tunnel_url = m.group()
+                    mcp_url = f"{tunnel_url}/mcp"
                     print()
                     print("  ╔════════════════════════════════════════════════════════════╗")
                     print("  ║  One step left — paste this URL into Claude.ai:            ║")
                     print("  ║                                                            ║")
-                    print(f"  ║  {tunnel_url:<60}  ║")
+                    print(f"  ║  {mcp_url:<60}  ║")
                     print("  ║                                                            ║")
                     print("  ║  Claude.ai → Settings → Integrations → Add custom         ║")
                     print("  ║  (leave OAuth / Client ID fields blank)                    ║")
@@ -353,7 +354,7 @@ def run_remote_with_tunnel(
                     print()
                     # Copy to clipboard (Windows)
                     try:
-                        subprocess.run(["clip"], input=tunnel_url, text=True, check=True)
+                        subprocess.run(["clip"], input=mcp_url, text=True, check=True)
                         print("  (URL copied to clipboard)")
                     except Exception:
                         pass
@@ -415,8 +416,8 @@ def run_remote(
     print("  To expose to Claude.ai:")
     print(f"    cloudflared tunnel --url http://localhost:{port}")
     print()
-    print("  Then in Claude.ai → Settings → Custom Connectors:")
-    print("    URL: https://xxxx.trycloudflare.com")
+    print("  Then in Claude.ai → Settings → Integrations → Add custom:")
+    print("    URL: https://xxxx.trycloudflare.com/mcp")
     print("    (leave OAuth fields blank — handled automatically)")
     print()
     print("  Ctrl+C to stop.")
