@@ -288,6 +288,84 @@ def load_or_create_token() -> str:
     return token
 
 
+def run_remote_with_tunnel(
+    host:  str | None = None,
+    port:  int | None = None,
+    token: str | None = None,
+) -> None:
+    """Start the remote server and a Cloudflare quick tunnel in one command."""
+    import re
+    import shutil
+    import subprocess
+    import threading
+    import time
+
+    host  = host  or "127.0.0.1"
+    port  = int(port or 8766)
+    token = token or load_or_create_token()
+
+    # Start the HTTP server on a background daemon thread
+    t = threading.Thread(target=run_remote, args=(host, port, token), daemon=True)
+    t.start()
+    time.sleep(1.5)  # let uvicorn bind before cloudflared connects
+
+    if not shutil.which("cloudflared"):
+        print()
+        print("  cloudflared not found — install it first:")
+        print("    Windows: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print("    Mac:     brew install cloudflared")
+        print("    Linux:   https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print()
+        print("  Then re-run:  continuum remote start --tunnel")
+        print()
+        try:
+            t.join()
+        except KeyboardInterrupt:
+            pass
+        return
+
+    print()
+    print("  Starting Cloudflare tunnel…")
+
+    proc = subprocess.Popen(
+        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    tunnel_url = None
+    try:
+        for line in iter(proc.stdout.readline, ""):
+            if tunnel_url is None:
+                m = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', line)
+                if m:
+                    tunnel_url = m.group()
+                    print()
+                    print("  ╔════════════════════════════════════════════════════════════╗")
+                    print("  ║  One step left — paste this URL into Claude.ai:            ║")
+                    print("  ║                                                            ║")
+                    print(f"  ║  {tunnel_url:<60}  ║")
+                    print("  ║                                                            ║")
+                    print("  ║  Claude.ai → Settings → Integrations → Add custom         ║")
+                    print("  ║  (leave OAuth / Client ID fields blank)                    ║")
+                    print("  ╚════════════════════════════════════════════════════════════╝")
+                    print()
+                    # Copy to clipboard (Windows)
+                    try:
+                        subprocess.run(["clip"], input=tunnel_url, text=True, check=True)
+                        print("  (URL copied to clipboard)")
+                    except Exception:
+                        pass
+                    print()
+                    print("  Ctrl+C to stop.")
+                    print()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        proc.terminate()
+
+
 def remote_status() -> dict:
     """Check whether the remote server process is running."""
     if not REMOTE_PID_FILE.exists():

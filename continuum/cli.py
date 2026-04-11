@@ -79,9 +79,53 @@ def setup():
         )
         console.print("[green]✓[/] Daemon started in background")
 
-    console.print("\n[bold]Continuum is ready.[/] Try:")
-    console.print("  continuum push 'echo hello'")
-    console.print("  continuum status")
+    console.print("\n[bold]Continuum is ready![/]")
+    console.print()
+    console.print("  [bold]Next step — pick your interface:[/]")
+    console.print()
+    console.print("  [cyan]Claude Code (CLI/IDE):[/]")
+    console.print("    continuum install-mcp        [dim]# auto-configure, then restart Claude Code[/]")
+    console.print()
+    console.print("  [cyan]Claude.ai (web/mobile):[/]")
+    console.print("    continuum remote start --tunnel   [dim]# starts server + tunnel, prints URL to paste[/]")
+    console.print()
+
+
+@cli.command("install-mcp")
+@click.option("--global", "global_install", is_flag=True,
+              help="Write to ~/.claude/mcp.json (user-wide) instead of ./.mcp.json")
+def install_mcp(global_install):
+    """Add Continuum to Claude Code's MCP config — no JSON editing required.
+
+    \b
+    Writes to .mcp.json in the current directory (project-level).
+    Use --global to write to ~/.claude/mcp.json instead (all projects).
+
+    \b
+    After running this command, restart Claude Code.
+    """
+    target = (Path.home() / ".claude" / "mcp.json") if global_install else (Path.cwd() / ".mcp.json")
+
+    config = {}
+    if target.exists():
+        try:
+            config = json.loads(target.read_text())
+        except json.JSONDecodeError:
+            console.print(f"[yellow]Warning:[/] {target} contains invalid JSON — will overwrite.")
+
+    config.setdefault("mcpServers", {})
+    config["mcpServers"]["continuum"] = {
+        "type":    "stdio",
+        "command": sys.executable,
+        "args":    ["-m", "continuum.mcp_server"],
+    }
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(config, indent=2))
+
+    console.print(f"[green]✓[/] Written to {target}")
+    console.print()
+    console.print("  [bold]Restart Claude Code[/] to load the Continuum tools.")
 
 
 # ===========================================================================
@@ -770,26 +814,35 @@ def remote():
 
 
 @remote.command("start")
-@click.option("--port", "-p", default=8766, help="Port to bind (default: 8766)")
-@click.option("--host", "-h", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
-@click.option("--token", "-t", default=None, help="Bearer token (auto-generated if omitted)")
-def remote_start(port, host, token):
+@click.option("--port",   "-p", default=8766,        help="Port to bind (default: 8766)")
+@click.option("--host",   "-h", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+@click.option("--token",  "-t", default=None,        help="Bearer token (auto-generated if omitted)")
+@click.option("--tunnel", "-T", is_flag=True,        help="Auto-start a Cloudflare tunnel and print the URL to paste")
+def remote_start(port, host, token, tunnel):
     """Start the remote MCP server (foreground).
 
     \b
-    Then expose it publicly:
-      ngrok http <port>
+    Simplest setup — one command:
+      continuum remote start --tunnel
 
-    Then add to Claude.ai → Settings → Custom Connectors:
-      URL:   https://xxxx.ngrok.io/mcp
-      Auth:  Bearer <token shown at startup>
+    This starts the server AND a Cloudflare tunnel, then prints the URL
+    to paste into Claude.ai → Settings → Integrations.
+
+    \b
+    Manual setup (two terminals):
+      continuum remote start           # terminal 1
+      cloudflared tunnel --url http://localhost:8766   # terminal 2
     """
     try:
-        from .remote_server import run_remote
+        from .remote_server import run_remote, run_remote_with_tunnel
     except ImportError:
         console.print("[red]Remote server requires anyio:[/red] pip install 'continuum[remote]'")
         raise SystemExit(1)
-    run_remote(host=host, port=port, token=token)
+
+    if tunnel:
+        run_remote_with_tunnel(host=host, port=port, token=token)
+    else:
+        run_remote(host=host, port=port, token=token)
 
 
 @remote.command("status")
