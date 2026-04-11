@@ -49,42 +49,51 @@ class DB:
     # ------------------------------------------------------------------
 
     def _migrate(self) -> None:
-        self._conn.executescript("""
+        # Use individual execute() calls instead of executescript() to avoid
+        # Python 3.12+ bug where executescript() leaves connection in autocommit
+        # mode, breaking all subsequent commit() calls.
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id         TEXT PRIMARY KEY,
                 data       TEXT NOT NULL,
                 status     TEXT NOT NULL DEFAULT 'pending',
                 priority   INTEGER NOT NULL DEFAULT 5,
                 created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_tasks_status    ON tasks(status);
-            CREATE INDEX IF NOT EXISTS idx_tasks_priority  ON tasks(priority);
-
+            )
+        """)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority)")
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS results (
                 task_id     TEXT PRIMARY KEY,
                 data        TEXT NOT NULL,
                 finished_at TEXT NOT NULL
-            );
-
+            )
+        """)
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS checkpoints (
                 id        TEXT PRIMARY KEY,
                 project   TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 data      TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_cp_project
-                ON checkpoints(project, timestamp DESC);
-
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cp_project ON checkpoints(project, timestamp DESC)"
+        )
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS handoffs (
-                id           TEXT PRIMARY KEY,
+                id            TEXT PRIMARY KEY,
                 checkpoint_id TEXT NOT NULL,
-                project      TEXT NOT NULL,
-                generated_at TEXT NOT NULL,
-                data         TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_ho_project
-                ON handoffs(project, generated_at DESC);
-
+                project       TEXT NOT NULL,
+                generated_at  TEXT NOT NULL,
+                data          TEXT NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ho_project ON handoffs(project, generated_at DESC)"
+        )
+        self._conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS checkpoints_fts
             USING fts5(
                 id,
@@ -94,23 +103,27 @@ class DB:
                 context,
                 findings_text,
                 tokenize='porter ascii'
-            );
-
+            )
+        """)
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS project_configs (
                 project TEXT PRIMARY KEY,
                 data    TEXT NOT NULL
-            );
-
+            )
+        """)
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS notify_configs (
                 project TEXT PRIMARY KEY,
                 data    TEXT NOT NULL
-            );
-
+            )
+        """)
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS task_notify (
                 task_id TEXT PRIMARY KEY,
                 data    TEXT NOT NULL
-            );
-
+            )
+        """)
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS observations (
                 id         TEXT PRIMARY KEY,
                 project    TEXT NOT NULL,
@@ -118,10 +131,12 @@ class DB:
                 summary    TEXT NOT NULL,
                 timestamp  TEXT NOT NULL,
                 compressed INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_obs_project_comp
-                ON observations(project, compressed, timestamp);
-
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_obs_project_comp ON observations(project, compressed, timestamp)"
+        )
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS patterns (
                 id          TEXT PRIMARY KEY,
                 project     TEXT NOT NULL,
@@ -129,10 +144,12 @@ class DB:
                 frequency   INTEGER NOT NULL DEFAULT 1,
                 data        TEXT NOT NULL,
                 last_seen   TEXT NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_patterns_project_key
-                ON patterns(project, pattern_key);
-
+            )
+        """)
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_patterns_project_key ON patterns(project, pattern_key)"
+        )
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS token_events (
                 id         TEXT PRIMARY KEY,
                 project    TEXT,
@@ -140,10 +157,11 @@ class DB:
                 limit_     INTEGER NOT NULL,
                 pct        REAL NOT NULL,
                 timestamp  TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_token_project
-                ON token_events(project, timestamp DESC);
+            )
         """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_project ON token_events(project, timestamp DESC)"
+        )
         # --- Personal Memory ---
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS user_memory (
