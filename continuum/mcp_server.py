@@ -2134,9 +2134,29 @@ def dispatch_claude(
         depends_on: Task ID that must complete before this dispatches
     """
     task_name = name or f"claude: {prompt[:55]}"
-    # Escape the prompt for shell safety using single-quote wrapping
-    safe_prompt = prompt.replace("'", "'\\''")
-    command = f"claude --print -p '{safe_prompt}'"
+
+    # Write the prompt to a file and use a Python wrapper script to run it.
+    # This avoids all shell quoting issues (Windows CMD doesn't handle single
+    # quotes; long prompts with special chars break on any platform).
+    import sys as _sys
+    import secrets as _secrets
+    from pathlib import Path as _Path
+    prompts_dir = _Path.home() / ".continuum" / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    script_id = _secrets.token_hex(8)
+    prompt_file = prompts_dir / f"{script_id}.txt"
+    script_path = prompts_dir / f"{script_id}.py"
+
+    prompt_file.write_text(prompt, encoding="utf-8")
+    script_path.write_text(
+        "import subprocess, sys\n"
+        f"prompt = open({repr(str(prompt_file))}, encoding='utf-8').read()\n"
+        "r = subprocess.run(['claude', '--print', '-p', prompt])\n"
+        "sys.exit(r.returncode)\n",
+        encoding="utf-8",
+    )
+    command = f"{_sys.executable} {script_path}"
 
     task = Task(
         name=task_name,
