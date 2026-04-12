@@ -117,7 +117,7 @@ continuum remote start --tunnel
 **First time only — add to Claude.ai:**
 
 ```
-Claude.ai → Settings → Integrations → Add custom integration
+Claude.ai → Settings → Connectors → Add custom connector
 URL: https://<your-machine>.<tailnet>.ts.net/mcp
 (leave OAuth fields blank — handled automatically)
 ```
