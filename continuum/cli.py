@@ -87,7 +87,11 @@ def setup():
     console.print("    continuum install-mcp        [dim]# auto-configure, then restart Claude Code[/]")
     console.print()
     console.print("  [cyan]Claude.ai (web/mobile):[/]")
-    console.print("    continuum remote start --tunnel   [dim]# starts server + tunnel, prints URL to paste[/]")
+    console.print("    continuum remote start --tunnel")
+    console.print("    [dim]# starts server + Tailscale Funnel, prints your permanent URL[/]")
+    console.print()
+    console.print("  [dim]First time? Install Tailscale: https://tailscale.com/download[/]")
+    console.print("  [dim]Then enable HTTPS certs: tailscale.com/admin → DNS → Enable HTTPS Certificates[/]")
     console.print()
 
 

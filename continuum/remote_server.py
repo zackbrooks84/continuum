@@ -5,11 +5,20 @@ Implements full OAuth 2.0 Authorization Code + PKCE flow (RFC 7636) required
 by claude.ai's Custom Connectors.  Single-user local server — /authorize
 auto-approves without a login page.
 
-Claude.ai Setup:
-  1. Run:    continuum remote start --port 8766
-  2. Tunnel: cloudflared tunnel --url http://localhost:8766
-  3. Claude.ai → Settings → Custom Connectors → paste the Cloudflare URL
-     (no OAuth Client ID / Secret needed — handled automatically)
+Quick start (one-time setup):
+  1. Install Tailscale:  https://tailscale.com/download
+  2. Log in:             tailscale up
+  3. Enable HTTPS certs: tailscale.com/admin → DNS → Enable HTTPS Certificates
+  4. Test tunnel:        tailscale funnel 8766   (Ctrl+C when you see the URL)
+
+Every time you want to connect from Claude.ai:
+  1. Run:  continuum remote start --tunnel
+           (starts the server + Tailscale Funnel, prints your permanent URL)
+  2. Paste the URL (ends in /mcp) into:
+           Claude.ai → Settings → Integrations → Add custom integration
+           (leave OAuth Client ID / Secret blank — handled automatically)
+
+Your URL never changes — save it and reuse it every session.
 
 OAuth flow:
   claude.ai → POST /mcp                                 → 401 + WWW-Authenticate
@@ -293,7 +302,13 @@ def run_remote_with_tunnel(
     port:  int | None = None,
     token: str | None = None,
 ) -> None:
-    """Start the remote server and a Cloudflare quick tunnel in one command."""
+    """Start the remote server and a Tailscale Funnel tunnel in one command.
+
+    One-time setup required before first use:
+      1. Install Tailscale: https://tailscale.com/download
+      2. Log in: tailscale up
+      3. Enable HTTPS certificates: tailscale.com/admin → DNS → Enable HTTPS Certificates
+    """
     import re
     import shutil
     import subprocess
@@ -307,14 +322,16 @@ def run_remote_with_tunnel(
     # Start the HTTP server on a background daemon thread
     t = threading.Thread(target=run_remote, args=(host, port, token), daemon=True)
     t.start()
-    time.sleep(1.5)  # let uvicorn bind before cloudflared connects
+    time.sleep(1.5)  # let uvicorn bind before tunnel connects
 
-    if not shutil.which("cloudflared"):
+    if not shutil.which("tailscale"):
         print()
-        print("  cloudflared not found — install it first:")
-        print("    Windows: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
-        print("    Mac:     brew install cloudflared")
-        print("    Linux:   https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print("  tailscale not found — install it first:")
+        print("    https://tailscale.com/download")
+        print()
+        print("  After installing:")
+        print("    1. Log in:             tailscale up")
+        print("    2. Enable HTTPS certs: tailscale.com/admin → DNS → Enable HTTPS Certificates")
         print()
         print("  Then re-run:  continuum remote start --tunnel")
         print()
@@ -325,10 +342,10 @@ def run_remote_with_tunnel(
         return
 
     print()
-    print("  Starting Cloudflare tunnel…")
+    print("  Starting Tailscale Funnel…")
 
     proc = subprocess.Popen(
-        ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
+        ["tailscale", "funnel", str(port)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -338,13 +355,14 @@ def run_remote_with_tunnel(
     try:
         for line in iter(proc.stdout.readline, ""):
             if tunnel_url is None:
-                m = re.search(r'https://[a-z0-9-]+\.trycloudflare\.com', line)
+                m = re.search(r'https://[a-z0-9-]+\.[a-z0-9-]+\.ts\.net', line)
                 if m:
-                    tunnel_url = m.group()
+                    tunnel_url = m.group().rstrip("/")
                     mcp_url = f"{tunnel_url}/mcp"
                     print()
                     print("  ╔════════════════════════════════════════════════════════════╗")
-                    print("  ║  One step left — paste this URL into Claude.ai:            ║")
+                    print("  ║  Paste this URL into Claude.ai (save it — it never        ║")
+                    print("  ║  changes):                                                 ║")
                     print("  ║                                                            ║")
                     print(f"  ║  {mcp_url:<60}  ║")
                     print("  ║                                                            ║")
