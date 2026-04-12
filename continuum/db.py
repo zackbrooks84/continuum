@@ -488,10 +488,16 @@ class DB:
         # Fetch extra rows when filtering so we can hit the limit after tag pruning
         has_filter = bool(tags or exclude_tags or project)
         fetch_limit = limit * 5 if has_filter else limit
-        # Sanitize query for FTS5 — wrap in quotes to treat as phrase,
-        # escaping any embedded quotes. This prevents hyphens, colons, etc.
-        # from being interpreted as FTS5 operators.
-        safe_query = '"{}"'.format(query.replace('"', '""'))
+        # Build FTS5 query: if the user already used operators/quotes, pass through;
+        # otherwise split into words and AND them so each term must appear somewhere
+        # (phrase wrapping the full string was causing multi-word queries to return 0).
+        q = query.strip()
+        has_operators = any(op in q for op in [' AND ', ' OR ', ' NOT ', '"', '*'])
+        if has_operators:
+            safe_query = q  # user knows FTS5 syntax
+        else:
+            words = q.split()
+            safe_query = ' AND '.join('"{}"'.format(w.replace('"', '""')) for w in words)
         rows = self._conn.execute(
             """
             SELECT f.id, f.project, f.current_task, f.goal, c.timestamp, c.data
