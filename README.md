@@ -101,30 +101,35 @@ Restart Claude Code. All 35+ tools load automatically.
 
 Use the same memory and tools from **Claude.ai** via Custom Connectors — no second install, same DB.
 
-**3 steps:**
+**One-time setup (Tailscale Funnel — free, permanent URL, no domain needed):**
+
+1. Install Tailscale: https://tailscale.com/download
+2. Log in: `tailscale up`
+3. Enable HTTPS certificates: tailscale.com/admin → DNS → Enable HTTPS Certificates
+
+**Every session — one command:**
 
 ```bash
-# 1. Start the remote server
-continuum remote start --port 8766
-
-# 2. Expose it publicly with Cloudflare Tunnel (free, no interstitial)
-cloudflared tunnel --url http://localhost:8766
-
-# 3. Add to Claude.ai → Settings → Integrations → Add custom integration
-#    URL:   https://xxxx.trycloudflare.com/mcp
-#    (leave OAuth fields blank — handled automatically)
+continuum remote start --tunnel
+# Starts the server + Tailscale Funnel, prints your permanent URL
 ```
 
-That's it. `north_star()`, `remember_me()`, `smart_resume()` — all available on Claude.ai web instantly.
+**First time only — add to Claude.ai:**
+
+```
+Claude.ai → Settings → Integrations → Add custom integration
+URL: https://<your-machine>.<tailnet>.ts.net/mcp
+(leave OAuth fields blank — handled automatically)
+```
+
+Your URL never changes — save it and reuse it every session.
 
 ```bash
 continuum remote status   # check if running
 continuum remote token    # show/regenerate your bearer token
 ```
 
-> **Verify the connection:** `curl https://xxxx.trycloudflare.com/health` → `{"status":"ok","version":"0.1.0"}`
->
-> **Note:** The tunnel URL changes on each restart. For a stable URL, use a named Cloudflare tunnel with a fixed subdomain.
+> **Verify the connection:** `curl https://<your-machine>.<tailnet>.ts.net/health` → `{"status":"ok","version":"0.1.0"}`
 
 ---
 
