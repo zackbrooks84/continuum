@@ -477,14 +477,17 @@ class DB:
         limit: int = 10,
         tags: Optional[list[str]] = None,
         exclude_tags: Optional[list[str]] = None,
+        project: Optional[str] = None,
     ) -> list[dict]:
         """Full-text search over checkpoints. Returns compact summaries.
 
         Pass tags/exclude_tags to filter by checkpoint tags (private, archived, etc.).
+        Pass project to scope results to a single project (post-filter after FTS).
         """
         import json as _json
         # Fetch extra rows when filtering so we can hit the limit after tag pruning
-        fetch_limit = limit * 5 if (tags or exclude_tags) else limit
+        has_filter = bool(tags or exclude_tags or project)
+        fetch_limit = limit * 5 if has_filter else limit
         # Sanitize query for FTS5 — wrap in quotes to treat as phrase,
         # escaping any embedded quotes. This prevents hyphens, colons, etc.
         # from being interpreted as FTS5 operators.
@@ -503,6 +506,8 @@ class DB:
 
         results = []
         for r in rows:
+            if project and r["project"] != project:
+                continue
             if tags or exclude_tags:
                 cp_tags = _json.loads(r["data"]).get("tags", [])
                 if tags and not any(t in cp_tags for t in tags):

@@ -1258,20 +1258,27 @@ def smart_resume(
     """
     search_query = query or project
 
-    # Tier 1 — search
-    hits = _db.search_checkpoints(search_query, limit=15)
+    # Tier 1 — search (scope to project when no explicit query, to avoid cross-project noise
+    # and to correctly handle project names with hyphens/underscores)
+    if query:
+        # Explicit query — search all projects (user may want cross-project results)
+        hits = _db.search_checkpoints(search_query, limit=15)
+    else:
+        # Default: scope FTS to this project so project-name quirks don't cause misses
+        hits = _db.search_checkpoints(search_query, limit=15, project=project)
     count = len(hits)
 
     if count == 0:
-        # Nothing in memory — fall back to latest checkpoint if exists
-        cp = _db.latest_checkpoint(project)
-        if not cp:
+        # FTS miss — fall back to direct project lookup (bypasses FTS entirely)
+        recent = _db.list_checkpoints(project, limit=3)
+        if not recent:
             return {
                 "project": project,
                 "depth": "none",
                 "message": f"No memory for '{project}'. Call checkpoint() to start tracking.",
                 "handoff_tip": f"Use checkpoint() to save your first state for '{project}'.",
             }
+        cp = recent[0]
         # Return just the latest
         return {
             "project": project,
@@ -1286,7 +1293,7 @@ def smart_resume(
                 "dead_ends": cp.dead_ends,
                 "timestamp": cp.timestamp.isoformat(),
             },
-            "tip": "No FTS matches found. Showing latest checkpoint instead.",
+            "tip": "No FTS matches found. Showing latest checkpoint directly.",
         }
 
     if count <= 3:
