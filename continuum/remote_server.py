@@ -320,7 +320,7 @@ def run_remote_with_tunnel(
     token = token or load_or_create_token()
 
     # Start the HTTP server on a background daemon thread
-    t = threading.Thread(target=run_remote, args=(host, port, token), daemon=True)
+    t = threading.Thread(target=run_remote, args=(host, port, token, True), daemon=True)
     t.start()
     time.sleep(1.5)  # let uvicorn bind before tunnel connects
 
@@ -384,6 +384,20 @@ def run_remote_with_tunnel(
     finally:
         proc.terminate()
 
+    # Tailscale funnel exited (already running, or crashed) — keep server alive
+    if t.is_alive():
+        print()
+        print("  Tunnel process exited (may have been already running).")
+        print(f"  Server still running at http://{host}:{port}/mcp")
+        if tunnel_url:
+            print(f"  Public URL still active: {tunnel_url}/mcp")
+        print("  Ctrl+C to stop.")
+        print()
+        try:
+            t.join()
+        except KeyboardInterrupt:
+            pass
+
 
 def remote_status() -> dict:
     """Check whether the remote server process is running."""
@@ -406,6 +420,7 @@ def run_remote(
     host:  str | None = None,
     port:  int | None = None,
     token: str | None = None,
+    _tunnel_mode: bool = False,
 ) -> None:
     """Start the Continuum remote MCP server (blocking).
 
@@ -430,15 +445,12 @@ def run_remote(
     print()
     print(f"  Local URL : http://{host}:{port}/mcp")
     print(f"  Token     : {token}")
-    print()
-    print("  To expose to Claude.ai:")
-    print(f"    cloudflared tunnel --url http://localhost:{port}")
-    print()
-    print("  Then in Claude.ai → Settings → Integrations → Add custom:")
-    print("    URL: https://xxxx.trycloudflare.com/mcp")
-    print("    (leave OAuth fields blank — handled automatically)")
-    print()
-    print("  Ctrl+C to stop.")
+    if not _tunnel_mode:
+        print()
+        print("  To expose to Claude.ai, run in another terminal:")
+        print(f"    tailscale funnel {port}")
+        print()
+        print("  Ctrl+C to stop.")
     print()
 
     # Starlette's Middleware() works with pure ASGI classes too
