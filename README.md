@@ -14,6 +14,11 @@
 
 ## Quick Setup
 
+```bash
+git clone https://github.com/zackbrooks84/continuum.git
+cd continuum
+```
+
 **Windows:**
 ```powershell
 .\setup.ps1
