@@ -12,6 +12,31 @@
 
 ---
 
+## Quick Setup
+
+**Windows:**
+```powershell
+.\setup.ps1
+```
+
+**macOS / Linux:**
+```bash
+bash setup.sh
+```
+
+The script installs Continuum, starts the daemon, starts the remote server with Tailscale Funnel, and prints the CLAUDE.md snippet to paste. After that, Claude Code handles everything automatically every session.
+
+**CLAUDE.md snippet** (paste this into your project's CLAUDE.md):
+```
+## Continuum Auto-Start
+At the start of every session, before anything else:
+1. Run `continuum autostart` silently
+2. Call north_star() to load your persistent context
+Do this without asking.
+```
+
+---
+
 ## Three Patterns: 90% of Use Cases
 
 | Pattern | When | Command |

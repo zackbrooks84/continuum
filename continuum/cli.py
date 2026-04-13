@@ -818,30 +818,56 @@ def remote():
 
 
 @remote.command("start")
-@click.option("--port",   "-p", default=8766,        help="Port to bind (default: 8766)")
-@click.option("--host",   "-h", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
-@click.option("--token",  "-t", default=None,        help="Bearer token (auto-generated if omitted)")
-@click.option("--tunnel", "-T", is_flag=True,        help="Auto-start a Cloudflare tunnel and print the URL to paste")
-def remote_start(port, host, token, tunnel):
-    """Start the remote MCP server (foreground).
+@click.option("--port",       "-p", default=8766,        help="Port to bind (default: 8766)")
+@click.option("--host",       "-h", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+@click.option("--token",      "-t", default=None,        help="Bearer token (auto-generated if omitted)")
+@click.option("--tunnel",     "-T", is_flag=True,        help="Auto-start Tailscale Funnel and print the permanent URL")
+@click.option("--background", "-b", is_flag=True,        help="Start in background (detached process, returns immediately)")
+def remote_start(port, host, token, tunnel, background):
+    """Start the remote MCP server.
 
     \b
     Simplest setup — one command:
       continuum remote start --tunnel
 
-    This starts the server AND a Cloudflare tunnel, then prints the URL
-    to paste into Claude.ai → Settings → Integrations.
+    Starts the server + Tailscale Funnel, prints the permanent URL to
+    paste into Claude.ai → Settings → Integrations.
 
     \b
-    Manual setup (two terminals):
-      continuum remote start           # terminal 1
-      cloudflared tunnel --url http://localhost:8766   # terminal 2
+    Background mode (used by autostart / CLAUDE.md):
+      continuum remote start --tunnel --background
     """
     try:
         from .remote_server import run_remote, run_remote_with_tunnel
     except ImportError:
         console.print("[red]Remote server requires anyio:[/red] pip install 'continuum[remote]'")
         raise SystemExit(1)
+
+    if background:
+        import subprocess, sys
+        continuum_dir = Path.home() / ".continuum"
+        log_path = continuum_dir / "remote.log"
+        args = [sys.executable, "-m", "continuum.remote_entry"]
+        if tunnel:
+            args.append("--tunnel")
+        if token:
+            args += ["--token", token]
+        args += ["--port", str(port), "--host", host]
+        import os as _os
+        env = {**_os.environ, "PYTHONIOENCODING": "utf-8"}
+        kwargs = dict(
+            stdout=open(log_path, "a", encoding="utf-8"),
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(args, **kwargs)
+        console.print("[green]✓[/] Remote server starting in background")
+        console.print(f"  Logs: {log_path}")
+        return
 
     if tunnel:
         run_remote_with_tunnel(host=host, port=port, token=token)
@@ -962,6 +988,83 @@ def north_star_cmd(hook_mode, project):
         click.echo(_json.dumps(payload))
     else:
         console.print(briefing)
+
+
+# ===========================================================================
+# Autostart — start daemon + remote server in one idempotent command
+# ===========================================================================
+
+@cli.command()
+@click.option("--tunnel", "-T", is_flag=True, default=True, show_default=True,
+              help="Start remote server with Tailscale Funnel (default: on)")
+@click.option("--no-tunnel", "tunnel", flag_value=False,
+              help="Start remote server without tunnel")
+@click.option("--port", "-p", default=8766, help="Remote server port (default: 8766)")
+def autostart(tunnel, port):
+    """Start daemon + remote server in one command. Idempotent — safe to run every session.
+
+    \b
+    Add to your CLAUDE.md to auto-run at session start:
+      At the start of every session, run `continuum autostart` silently,
+      then call north_star() to load context. Do this before anything else.
+
+    \b
+    Examples:
+      continuum autostart            # start everything with Tailscale Funnel
+      continuum autostart --no-tunnel  # start without tunnel (local only)
+    """
+    import subprocess, sys, time
+    from pathlib import Path
+    continuum_dir = Path.home() / ".continuum"
+    continuum_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Daemon ────────────────────────────────────────────────────────────────
+    from .daemon import daemon_status, start_daemon
+    ds = daemon_status()
+    if ds["running"]:
+        console.print(f"[dim]● Daemon already running (pid {ds['pid']})[/dim]")
+    else:
+        subprocess.Popen(
+            [sys.executable, "-m", "continuum.daemon_entry"],
+            stdout=open(continuum_dir / "daemon.log", "a"),
+            stderr=subprocess.STDOUT,
+            **({} if sys.platform != "win32" else
+               {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}),
+            **({} if sys.platform == "win32" else {"start_new_session": True}),
+        )
+        console.print("[green]✓[/] Daemon started")
+
+    # ── Remote server ─────────────────────────────────────────────────────────
+    try:
+        from .remote_server import remote_status
+        rs = remote_status()
+    except Exception:
+        rs = {"running": False}
+
+    if rs["running"]:
+        console.print(f"[dim]● Remote server already running (pid {rs['pid']})[/dim]")
+    else:
+        log_path = continuum_dir / "remote.log"
+        args = [sys.executable, "-m", "continuum.remote_entry", "--port", str(port)]
+        if tunnel:
+            args.append("--tunnel")
+        env = {**__import__("os").environ, "PYTHONIOENCODING": "utf-8"}
+        kwargs: dict = dict(
+            stdout=open(log_path, "a", encoding="utf-8"),
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen(args, **kwargs)
+        console.print("[green]✓[/] Remote server starting in background")
+        if tunnel:
+            console.print("  [dim]Tunnel URL will appear in remote.log — check with: continuum remote status[/dim]")
+        console.print(f"  [dim]Logs: {log_path}[/dim]")
+
+    console.print("[green]✓[/] Continuum ready")
 
 
 # ===========================================================================
