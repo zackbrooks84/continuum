@@ -53,10 +53,19 @@ smart_resume("myapp")
 ## Install & Setup
 
 ```bash
-pip install continuum
+# Install from GitHub
+pip install git+https://github.com/zackbrooks84/continuum.git
 
 continuum setup          # create ~/.continuum, start daemon
 continuum status         # verify everything is running
+```
+
+Or clone if you want to hack on it:
+
+```bash
+git clone https://github.com/zackbrooks84/continuum.git
+cd continuum
+pip install -e .
 ```
 
 **Requirements:** Python 3.11+, no cloud accounts, no API keys required.
@@ -93,7 +102,7 @@ Or with plain Python:
 }
 ```
 
-Restart Claude Code. All 35+ tools load automatically.
+Restart Claude Code. All 40+ tools load automatically.
 
 ---
 
@@ -269,7 +278,7 @@ How to read results:
 
 ## Architecture
 
-One SQLite database at `~/.continuum/continuum.db`. A background daemon handles task execution, observation compression, and notification dispatch. The MCP server exposes all 35+ tools over stdio. A remote HTTP server bridges your local DB to Claude.ai Custom Connectors. No cloud, no accounts — everything stays on your machine.
+One SQLite database at `~/.continuum/continuum.db`. A background daemon handles task execution, observation compression, and notification dispatch. The MCP server exposes all 40+ tools over stdio. A remote HTTP server bridges your local DB to Claude.ai Custom Connectors. No cloud, no accounts — everything stays on your machine.
 
 ```
 continuum/
